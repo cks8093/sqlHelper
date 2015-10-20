@@ -1,0 +1,815 @@
+﻿USE [SMART_API]
+GO
+/****** Object:  UserDefinedFunction [dbo].[fn_ContentSeriesPriceYN_Select]    Script Date: 2015-10-15 오후 4:42:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+-- 작성일 : 2013년 11월 18일
+-- 작성자 : 김병희 
+-- 기  능 : 컨텐츠, 시리즈의 가격정보가 있는지 체크
+-- 실  행 : SELECT dbo.fn_ContentSeriesPriceYN_Select ('C','C131008V022002')
+-- 변경이력 :
+CREATE FUNCTION [dbo].[fn_ContentSeriesPriceYN_Select] (@contentType varchar(10),@contentID varchar(14))
+RETURNS CHAR(1)
+AS
+BEGIN
+	
+	declare @priceYN char(1) = 'N' --기본값
+	
+	--#.컨텐츠일때
+	if(@contentType = 'C')
+		begin
+			if(select count (1) from SMART_CMS.dbo.contentVODPriceInfo cp
+				where cp.contentID = @contentID
+				and cp.efctStartDate <= current_timestamp 
+				and cp.efctEndDate >= current_timestamp) > 0
+				begin
+					set @priceYN = 'Y'
+				end
+		end
+
+	--#.시리즈일때
+	if(@contentType = 'S')
+		begin
+			if(select count(1) from SMART_CMS.dbo.SeriesPriceInfo sp
+				where sp.seriesID = @contentID
+				and sp.efctStartDate <= current_timestamp 
+				and sp.efctEndDate >= current_timestamp) > 0
+				begin
+					set @priceYN = 'Y'
+				end
+		end
+	
+	RETURN @priceYN;
+
+END
+
+GO
+/****** Object:  UserDefinedFunction [dbo].[fn_IPGKey_Select]    Script Date: 2015-10-15 오후 4:42:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+-- 작성일 : 2014년 01월 09일
+-- 작성자 : 김병희 
+-- 기  능 : 현재 IPG KEY정보
+-- 실  행 : select dbo.fn_IPGKey_Select() 
+-- 변경이력 :
+
+CREATE FUNCTION [dbo].[fn_IPGKey_Select] ()
+RETURNS INT
+AS
+BEGIN
+
+	DECLARE @ipgKey INT;
+	SELECT @ipgKey = ipgKey FROM dbo.IPGInfo WHERE serviceYn = 'Y' AND delYn = 'N' and testYn='N';	
+
+	RETURN @ipgKey
+
+END
+
+
+
+
+GO
+/****** Object:  UserDefinedFunction [dbo].[fn_IPGKey_SmartSelect]    Script Date: 2015-10-15 오후 4:42:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+
+
+-- 작성일 : 2014년 01월 09일
+-- 작성자 : 김병희 
+-- 기  능 : 현재 IPG KEY정보(TEST버전)
+-- 실  행 : select dbo.fn_IPGKey_Select() 
+-- 변경이력 :
+
+create FUNCTION [dbo].[fn_IPGKey_SmartSelect]
+(
+	@isTest		char(1)
+)
+RETURNS INT
+AS
+BEGIN
+
+	DECLARE @ipgKey INT;
+
+	if @isTest = 1
+	begin
+		
+		SELECT @ipgKey = ipgKey FROM dbo.IPGInfo WHERE serviceYn = 'Y' AND delYn = 'N' and testYn = 'Y';	
+	end
+	else
+	begin
+		SELECT @ipgKey = ipgKey FROM dbo.IPGInfo WHERE serviceYn = 'Y' AND delYn = 'N' and testYn = 'N';	
+	end
+
+	RETURN @ipgKey
+
+END
+
+
+
+
+
+
+
+GO
+/****** Object:  UserDefinedFunction [dbo].[fn_IPGTree_Select_FullCode]    Script Date: 2015-10-15 오후 4:42:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+-- 작성일 : 2014년 11월 24일
+-- 작성자 : 최광섭 
+-- 기  능 : 컨텐츠 입수 관리 목록 IPG FullCode  반환
+-- 실  행 : select dbo.[fn_IPGTree_Select_FullCode](506)
+-- 변경이력 :
+
+CREATE FUNCTION [dbo].[fn_IPGTree_Select_FullCode] (@SelfNodeID int)
+RETURNS VARCHAR(8000)
+AS
+BEGIN
+
+	DECLARE @ipgKey INT;
+	SELECT @ipgKey = ipgKey
+	FROM dbo.IPGInfo
+	WHERE serviceYn = 'Y' AND delYn = 'N' and testYn = 'N';
+
+	DECLARE @RES VARCHAR(8000);	
+	WITH ipgTree_tmp (parentNodeId, SelfNodeID, level)
+	AS
+		   (
+				SELECT parentNodeId, SelfNodeID, 0
+				FROM IPGTreesmart where selfnodeId = @SelfNodeID and ipgKey = @ipgKey
+				UNION ALL
+				SELECT A.parentNodeId, A.SelfNodeID, B.level+1 
+				FROM IPGTreesmart A, ipgtree_tmp B
+				WHERE A.selfnodeId = B.parentnodeid and ipgKey = @ipgKey
+		   )
+
+	     
+	SELECT @RES = coalesce(@RES + '>', '') + cast(SelfNodeID as varchar(10))
+	FROM ipgTree_tmp 
+	ORDER BY LEVEL DESC
+	OPTION(MAXRECURSION 100);
+
+	RETURN @res
+
+END
+
+
+
+
+
+GO
+/****** Object:  UserDefinedFunction [dbo].[fn_IPGTree_Select_FullPath]    Script Date: 2015-10-15 오후 4:42:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+-- 작성일 : 2013년 06월 24일
+-- 작성자 : 정수미 
+-- 기  능 : 컨텐츠 입수 관리 목록 IPG FullPath  반환
+-- 실  행 : fn_IPGTree_Select_FullPath 1
+-- 변경이력 :
+
+CREATE FUNCTION [dbo].[fn_IPGTree_Select_FullPath] (
+@SelfNodeID int,
+@ipgKey INT
+)
+RETURNS VARCHAR(8000)
+AS
+BEGIN
+
+	DECLARE @RES VARCHAR(8000);	
+	WITH ipgTree_tmp (parentNodeId, SelfNodeID, NodeName, level)
+	AS
+		   (
+				SELECT parentNodeId, SelfNodeID, nodeName, 0
+				FROM IPGTreeSmart where selfnodeId = @SelfNodeID and ipgKey = @ipgKey
+				UNION ALL
+				SELECT A.parentNodeId, A.SelfNodeID, A.nodeName, B.level+1 
+				FROM IPGTreeSmart A, ipgtree_tmp B
+				WHERE A.selfnodeId = B.parentnodeid and ipgKey = @ipgKey
+		   )
+
+	     
+	SELECT @RES = coalesce(@RES + '>', '') + NodeName
+	FROM ipgTree_tmp 
+	ORDER BY LEVEL DESC
+	OPTION(MAXRECURSION 100);
+
+	RETURN @res
+
+END
+
+
+
+
+
+GO
+/****** Object:  UserDefinedFunction [dbo].[fn_IPGTree_Select_MAINNODEID]    Script Date: 2015-10-15 오후 4:42:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+-- 작성일 : 2013년 06월 24일
+-- 작성자 : 정수미 
+-- 기  능 : IPG테이블에서 1depth의 카테고리 아이디를 가져온다.
+-- 실  행 : select dbo.[fn_IPGTree_Select_MAINNODEID](377);
+-- 변경이력 :
+
+CREATE FUNCTION [dbo].[fn_IPGTree_Select_MAINNODEID] (
+@SelfNodeID int,
+@ipgKey INT
+)
+RETURNS bigint
+AS
+BEGIN
+
+	DECLARE @RES bigint;	
+	WITH ipgTree_tmp 
+	AS
+		   (
+				SELECT parentNodeId, SelfNodeID, nodeLevel
+				FROM IPGTreeSmart where selfnodeId = @SelfNodeID and ipgKey = @ipgKey
+				UNION ALL
+				SELECT A.parentNodeId, A.SelfNodeID, A.nodeLevel
+				FROM IPGTreeSmart A, ipgtree_tmp B
+				WHERE A.SelfNodeID = B.parentNodeId and ipgKey = @ipgKey
+		   )
+	select @RES = SelfNodeID from ipgTree_tmp where nodeLevel = 1;
+	     
+	
+
+	RETURN @res
+
+END
+
+
+
+GO
+/****** Object:  UserDefinedFunction [dbo].[fn_IPGTree_Select_SUBNODEID]    Script Date: 2015-10-15 오후 4:42:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+
+-- 작성일 : 2013년 06월 24일
+-- 작성자 : 정수미 
+-- 기  능 : IPG테이블에서 2depth의 카테고리 아이디를 가져온다.
+-- 실  행 : select dbo.[fn_IPGTree_Select_SUBNODEID](377);
+-- 변경이력 :
+
+CREATE FUNCTION [dbo].[fn_IPGTree_Select_SUBNODEID] (
+@SelfNodeID int,
+@ipgKey INT
+)
+RETURNS bigint
+AS
+BEGIN
+	DECLARE @RES bigint;	
+	WITH ipgTree_tmp 
+	AS
+		   (
+				SELECT parentNodeId, SelfNodeID, nodeLevel
+				FROM IPGTreeSmart where selfnodeId = @SelfNodeID and ipgKey = @ipgKey
+				UNION ALL
+				SELECT A.parentNodeId, A.SelfNodeID, A.nodeLevel
+				FROM IPGTreeSmart A, ipgtree_tmp B
+				WHERE A.SelfNodeID = B.parentNodeId and ipgKey = @ipgKey
+		   )
+	select @RES = SelfNodeID from ipgTree_tmp where nodeLevel = 2;
+	
+	--2레벨이 없다면
+	if(@RES is null)
+	begin
+		WITH ipgTree_tmp 
+	AS
+		   (
+				SELECT parentNodeId, SelfNodeID, nodeLevel
+				FROM IPGTreeSmart where selfnodeId = @SelfNodeID and ipgKey = @ipgKey
+				UNION ALL
+				SELECT A.parentNodeId, A.SelfNodeID, A.nodeLevel
+				FROM IPGTreeSmart A, ipgtree_tmp B
+				WHERE A.SelfNodeID = B.parentNodeId and ipgKey = @ipgKey
+		   )
+		select @RES = SelfNodeID from ipgTree_tmp where nodeLevel = 1;
+	end	
+	     
+	
+
+	RETURN @res
+
+END
+GO
+/****** Object:  UserDefinedFunction [dbo].[fn_IpgTreeContentPrice]    Script Date: 2015-10-15 오후 4:42:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+-- 작성일 : 2014년 11월 10일
+-- 작성자 : 최광섭 
+-- 기  능 : API컨텐츠 최종가격 반환
+-- 실  행 : SELECT DBO.[FN_IPGTREECONTENTPRICE](498, 'C', '', 'C141118V081004', '')
+-- 변경이력 :
+CREATE FUNCTION [dbo].[fn_IpgTreeContentPrice] (
+	@SUBCTGRID   BIGINT, --카테고리 ID
+    @CONTENTTYPE CHAR(1), ----컨텐츠 : C, 시리즈 : S
+    @CHRGPRDTCD  VARCHAR(100), --월정액
+    @CONTENTID   CHAR(14), --컨텐츠ID
+	@ISTEST		CHAR(1) = ''
+)
+RETURNS VARCHAR(50)
+ /*
+	리턴값
+	=> 최종적용가격,최종가격타입,월정액적용시코드(STB월정액쿠키)
+	EX)0,P,M001111
+ 
+    C : 단편
+	S : 시리즈
+	P : 월정액
+	*/
+AS
+  BEGIN
+      DECLARE @PRICE INT = 0, @PRICETYPE CHAR(1) = ''; --리턴할 변수
+      -- 사용중인 IPGKEY 가져오기
+      DECLARE @IPGKEY INT = (SELECT DBO.[FN_IPGKEY_SMARTSELECT](@ISTEST));
+      -- 카테고리에 대한 모든 정보를 가져온다.
+	  DECLARE @PACKAGECODE1 VARCHAR(1000) = '';--카테고리 월정액 
+
+      DECLARE @TMP TABLE
+        (
+           SELFNODEID   INT,
+           PARENTNODEID INT,
+           PACKAGECODE  VARCHAR(12),
+           NODELEVEL    INT
+        );
+
+      WITH UPCATEGORYTBL -- 상위카테고리 가져오기
+           AS (SELECT A.SELFNODEID,
+                      A.PARENTNODEID,
+                      A.PACKAGECODE,
+                      A.NODELEVEL
+               FROM   IPGTREESMART A
+               WHERE  A.IPGKEY = @IPGKEY
+                      AND A.SELFNODEID = @SUBCTGRID
+               UNION ALL
+               SELECT A.SELFNODEID,
+                      A.PARENTNODEID,
+                      A.PACKAGECODE,
+                      A.NODELEVEL
+               FROM   IPGTREESMART A
+                      INNER JOIN UPCATEGORYTBL B
+                              ON A.SELFNODEID = B.PARENTNODEID
+                                 AND A.IPGKEY = @IPGKEY)
+
+	  ---------------------------월정액 여부 가져오기---------------------------
+		SELECT TOP 1 @PACKAGECODE1 = PACKAGECODE
+		FROM UPCATEGORYTBL 
+		WHERE ( CHARINDEX(PACKAGECODE, @CHRGPRDTCD) > 0 )
+		ORDER BY NODELEVEL ASC;
+
+		IF( @PACKAGECODE1 != '' )
+		BEGIN
+			SET @PRICETYPE = 'P'; --월정액  
+		END  
+      ---------------------------월정액 여부 가져오기---------------------------
+
+      ---------------------------기본 가격 가져오기---------------------------  
+      IF( @CONTENTTYPE = 'C' ) --컨텐츠일경우
+        BEGIN
+            SELECT @PRICE = ISNULL(PRICE, 0), --일반가격
+                   @PRICETYPE = CASE
+                              WHEN @PRICETYPE = 'P' THEN 'P'                              
+                              --월정액 단품 가격(가격이 0이상)
+                              ELSE 'C'
+                            END --일반가격
+            FROM   CONTENTVODPRICEINFO
+            WHERE  IPGKEY = @IPGKEY
+                   AND CONTENTID = @CONTENTID
+                   AND EFCTSTARTDATE <= GETDATE()
+                   AND EFCTENDDATE >= GETDATE();
+        END
+      ELSE --시리즈일경우
+        BEGIN
+            SELECT @PRICE = ISNULL(PRICE, 0), --일반가격
+                   @PRICETYPE = CASE
+                              WHEN @PRICETYPE = 'P' THEN 'P'                              
+                              --월정액 시리즈 가격
+                              ELSE 'S'
+                            END --일반가격
+            FROM   SERIESPRICEINFO
+            WHERE  IPGKEY = @IPGKEY
+                   AND SERIESID = @CONTENTID
+                   AND EFCTSTARTDATE <= GETDATE()
+                   AND EFCTENDDATE >= GETDATE();
+        END
+
+      ---------------------------기본 가격 가져오기--------------------------- 
+      
+      RETURN CAST(@PRICE AS VARCHAR(10)) + ',' + @PRICETYPE + ',' + @PACKAGECODE1;
+      --리턴값 : 가격,가격타입,월정액코드(STB쿠키 월정액)
+  END 
+
+
+GO
+/****** Object:  UserDefinedFunction [dbo].[fn_Is_SubCategory]    Script Date: 2015-10-15 오후 4:42:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+-- 작성일 : 2014년 11월 05일
+-- 작성자 : 권혁진
+-- 기  능 : 스마트 IPG 카테고리 이름 반환
+-- 실  행 : SELECT dbo.fn_Is_SubCategory (1,1)
+-- 변경이력 :
+create FUNCTION [dbo].[fn_Is_SubCategory]
+(
+	@ipgKey INT,
+	@selfNodeID BIGINT
+)
+RETURNS VARCHAR(50)
+
+AS
+BEGIN
+	DECLARE @RES VARCHAR(50);	
+
+	SELECT @RES = COUNT(selfNodeID) FROM IPGTreeSmart 
+	WHERE ipgKey = @ipgKey AND parentNodeID = @selfNodeID
+	
+	RETURN @RES
+
+END
+
+GO
+/****** Object:  UserDefinedFunction [dbo].[fn_PurchaseBuyYn]    Script Date: 2015-10-15 오후 4:42:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+-- 작성일 : 2014년 12월 10일
+-- 작성자 : 유선모 
+-- 기  능 : 구매여부 반환
+-- 실  행 : SELECT DBO.FN_PURCHASEBUYYN (533,'C','M0211100,1515151,M001110','S1310084022001', '00002650441')
+-- 변경이력 :
+CREATE FUNCTION [dbo].[fn_PurchaseBuyYn] (
+	@SUBCTGRID   BIGINT, --카테고리 ID
+    @CONTENTTYPE CHAR(1), ----컨텐츠 : C, 시리즈 : S
+    @CONTENTID   CHAR(14) --컨텐츠ID
+	,@CONTRACTID VARCHAR(20)
+	,@CHRGPRDTCD VARCHAR(100)
+)
+RETURNS VARCHAR(10)
+ /*
+	함수 변경 시 FN_PURCHASEBUYYNCHECK함수도 수정바람!
+ 
+    C : 단편
+	S : 시리즈
+	*/
+AS
+  BEGIN
+	  DECLARE @RETURN VARCHAR(50);
+      --구매 여부 확인			
+	  DECLARE @BUYTYPE CHAR(1) = 'N';
+      -- 사용중인 IPGKEY 가져오기
+      DECLARE @IPGKEY INT = (SELECT DBO.FN_IPGKEY_SELECT());
+      -- 카테고리에 대한 모든 정보를 가져온다.
+
+	  SET @CONTRACTID = REPLACE(@CONTRACTID,'_','');
+      
+	        ---------------------------컨텐츠 시리즈 구매여부 가져오기---------------------------  
+      IF( @CONTENTTYPE = 'C' ) --컨텐츠일경우
+        BEGIN
+				SELECT TOP 1 @BUYTYPE = PURTYPE
+						FROM SMART_CMS.DBO.PURCHASE --#.구매내역정보
+						WHERE CONTENTID = @CONTENTID
+							  AND EXPIREDATE >= GETDATE() AND (ISREFUNDMENT !=  'Y' OR ISREFUNDMENT IS NULL)
+							  AND LEGACYID = @CONTRACTID
+							  AND SELFNODEID = @SUBCTGRID
+						ORDER BY PURTYPE DESC;
+        END
+      ELSE IF(@CONTENTTYPE = 'S') --시리즈일경우
+        BEGIN
+            SELECT TOP 1 @BUYTYPE = PURTYPE
+			FROM SMART_CMS.DBO.PURCHASE --#.구매내역정보
+			WHERE SERIESID = @CONTENTID 
+				  AND EXPIREDATE >= GETDATE() AND (ISREFUNDMENT !=  'Y' OR ISREFUNDMENT IS NULL)
+				  AND LEGACYID = @CONTRACTID
+				  AND SELFNODEID = @SUBCTGRID
+			ORDER BY PURTYPE DESC;
+        END
+      ---------------------------컨텐츠 시리즈 구매여부 가져오기--------------------------- 
+
+	 
+	  ---------------------------컨텐츠 구매 여부 없을 경우 월정액 여부 따져서 월정액 내 단품이 0원이면 구매로 던진다.----------------
+	 
+	 IF @BUYTYPE = 'N'
+	 BEGIN
+      DECLARE @PACKAGECODE1 VARCHAR(1000) = '';--카테고리 월정액 
+
+      WITH UPCATEGORYTBL -- 상위카테고리 가져오기
+           AS (SELECT A.SELFNODEID,
+                      A.PARENTNODEID,
+                      A.PACKAGECODE,
+                      A.NODELEVEL
+               FROM   IPGTREESMART A
+               WHERE  A.IPGKEY = @IPGKEY
+                      AND A.SELFNODEID = @SUBCTGRID
+               UNION ALL
+               SELECT A.SELFNODEID,
+                      A.PARENTNODEID,
+                      A.PACKAGECODE,
+                      A.NODELEVEL
+               FROM   IPGTREESMART A
+                      INNER JOIN UPCATEGORYTBL B
+                              ON A.SELFNODEID = B.PARENTNODEID
+                                 AND A.IPGKEY = @IPGKEY)
+
+      SELECT @PACKAGECODE1 = @PACKAGECODE1 + PACKAGECODE + ','
+		FROM IPGTree WHERE IPGKEY=@IPGKEY AND ISNULL(PACKAGECODE, '') != '';
+		IF( CHARINDEX(@PACKAGECODE1, @CHRGPRDTCD) > 0 )
+		BEGIN
+			SET @BUYTYPE = 'P'; --월정액  
+		END
+      END
+
+      RETURN CAST(@BUYTYPE AS VARCHAR(10));
+  END 
+GO
+/****** Object:  UserDefinedFunction [dbo].[fn_Select_CPID]    Script Date: 2015-10-15 오후 4:42:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+-- 작성일 : 2014년 11월 05일
+-- 작성자 : 권혁진
+-- 기  능 : CP ID 반환
+-- 실  행 : SELECT dbo.fn_Select_CPID (1)
+-- 변경이력 :
+create FUNCTION [dbo].[fn_Select_CPID]
+(
+	@parentNodeID BIGINT
+)
+RETURNS VARCHAR(50)
+
+AS
+BEGIN
+	DECLARE @RES VARCHAR(50);	
+
+	SELECT @RES = [cpID]
+	FROM [SMART_CMS].[dbo].[IpgCpMapping]
+	WHERE [selfNodeID] = @parentNodeID
+
+	RETURN @RES
+
+END
+
+
+GO
+/****** Object:  UserDefinedFunction [dbo].[fn_SeriesID]    Script Date: 2015-10-15 오후 4:42:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+-- 작성일 : 2013년 09월 28일
+-- 작성자 : 정수미 
+-- 기  능 : IPG 카테고리내 seriesID 반환
+-- 실  행 : SELECT dbo.fn_SeriesID (11089,'C130918V013001')
+-- 변경이력 :
+CREATE FUNCTION [dbo].[fn_SeriesID] (@ipgKey INT,@contentID CHAR(14))
+RETURNS VARCHAR(14)
+AS
+BEGIN
+	
+	DECLARE @RES VARCHAR(14);	
+
+	SELECT TOP 1  @RES = 	A.contentID	   
+	FROM dbo.IPGTreeContent A
+	INNER JOIN (
+		SELECT TOP 1 seriesID
+		FROM dbo.SeriesContent 
+		WHERE ipgKey = @ipgKey AND useYN = 'Y' AND startDate <= GETDATE() AND endDate >= GETDATE()	 AND contentID = @contentID
+		ORDER BY regDate DESC
+	) B
+	 ON A.contentID = B.seriesID
+	WHERE A.ipgKey = @ipgKey AND A.useYN = 'Y' AND contentType = 'S'
+	ORDER BY selfNodeID DESC
+	
+	RETURN ISNULL(@RES,'');
+
+END
+
+GO
+/****** Object:  UserDefinedFunction [dbo].[fn_Split]    Script Date: 2015-10-15 오후 4:42:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+-- 작성일 : 2013년 06월 25일
+-- 작성자 : 정수미 
+-- 기  능 : 배열 위치 값 반환
+-- 실  행 : SELECT [dbo].[fn_Split] ('200/3000','/',1)
+-- 변경이력 :
+CREATE      FUNCTION [dbo].[fn_Split](@sText varchar(8000), @sDelim varchar(20) ='#', @Index TINYINT)  
+	RETURNS VARCHAR(8000)
+/*
+ RETURNS @retArray  
+ TABLE  
+ (  
+  idx smallint Primary Key,		-- 배열 색인
+  value varchar(8000)					-- 배열 값
+ )
+*/  
+AS  
+BEGIN  
+ DECLARE @idx SMALLINT,  
+	@value VARCHAR(8000),  
+	@bcontinue BIT,  
+	@iStrike SMALLINT,  
+	@iDelimlength TINYINT,
+	@Arr VARCHAR(8000)
+   
+ SET @idx = 0  -- 인덱스 시작값
+ SET @sText = LTrim(RTrim(@sText))  
+ SET @iDelimlength = LEN(@sDelim)  
+ SET @bcontinue = 1  
+ WHILE @bcontinue = 1  
+	BEGIN  
+		--텍스트에서 구분자를 발견하면, 첫 번째 요소를 반환하고  
+		--반환되는 테이블에 인덱스를 입력한다.  
+		IF CHARINDEX(@sDelim, @sText)>0  
+			BEGIN  
+				-- 첫 번째 요소를 반환  
+				SET @value = SUBSTRING(@sText,1, CHARINDEX(@sDelim,@sText)-1)  
+				IF @idx = @INDEX
+					SET @Arr = @Value
+--				INSERT @retArray (idx, value) VALUES (@idx, @value)  
+				--다음 요소와 구분자를 문자열의 앞에서부터 제거하고,  
+				--index를 증가시키고 반복작업(loop)을 이어간다.  
+				SET @iStrike = LEN(@value) + @iDelimlength  
+				SET @idx = @idx + 1  
+				SET @sText = LTrim(Right(@sText,LEN(@sText) - @iStrike))  
+			END
+		ELSE  
+			BEGIN  
+				--만약 텍스트 안에서 구분자를 더 이상 찾을 수 없게 되면,   
+				--@sText가 @retArray의 마지막 값이다.  
+				SET @value = @sText  
+				-- 마지막 값도 구분자로 나누어져 있으뎐  
+				IF @idx = @INDEX
+					SET @Arr = @Value
+--				INSERT @retArray (idx, value) VALUES (@idx, @value)  
+				--WHILE 루프를 빠져 나온다.  
+				SET @bcontinue = 0  
+			END  
+	END  
+	RETURN ISNULL(@Arr, '')
+END
+
+
+GO
+/****** Object:  UserDefinedFunction [dbo].[fn_Split_Tbl]    Script Date: 2015-10-15 오후 4:42:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+-- 작성일 : 2013.06.20
+-- 작성자 : 한수정
+-- 제  목 : 공통 - Split
+-- 실  행 : 
+-- 변경이력 : select * from dbo.fn_split_tbl('1,1,0,0,0,0,1','')
+--             2013.08.12 : API  DB에 추가함(정수미)
+
+CREATE FUNCTION [dbo].[fn_Split_Tbl]  
+(      
+		@TEXT       VARCHAR(8000)  
+    ,	@DELIMITER	CHAR(1)  
+)  
+RETURNS @STRINGS TABLE 
+(  
+    POSITION INT IDENTITY(1,1) PRIMARY KEY,   
+    VALUE VARCHAR(200)
+)  
+AS 
+BEGIN     
+    DECLARE @INDEX  INT 
+      
+   SET @INDEX = -1  
+      
+    WHILE (LEN(@text) > 0)  
+    BEGIN 
+        SET @INDEX = CHARINDEX(@DELIMITER , @TEXT)  
+          
+        IF (@INDEX = 0) AND (LEN(@TEXT) > 0)  
+        BEGIN 
+            INSERT INTO @STRINGS VALUES (@TEXT)  
+            BREAK  
+        END 
+          
+        IF (@INDEX > 1)  
+        BEGIN 
+            INSERT INTO @STRINGS VALUES (LEFT(@TEXT, @INDEX - 1))  
+            SET @TEXT = RIGHT(@TEXT, (LEN(@TEXT) - @INDEX))  
+        END 
+        ELSE 
+            SET @TEXT = RIGHT(@TEXT, (LEN(@TEXT) - @INDEX))   
+    END  
+    
+    RETURN  
+END
+
+
+GO
+/****** Object:  UserDefinedFunction [dbo].[fn_TreeName]    Script Date: 2015-10-15 오후 4:42:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+-- 작성일 : 2013년 09월 26일
+-- 작성자 : 정수미 
+-- 기  능 : IPG 카테고리 이름 반환
+-- 실  행 : SELECT dbo.fn_TreeName (1,1)
+-- 변경이력 :
+CREATE FUNCTION [dbo].[fn_TreeName] (@ipgKey INT,@selfNodeID BIGINT)
+RETURNS VARCHAR(50)
+AS
+BEGIN
+
+	DECLARE @RES VARCHAR(50);	
+
+	SELECT  @RES = 	nodeName	   
+	FROM dbo.IPGTree
+	WHERE ipgKey = @ipgKey AND selfNodeID = @selfNodeID
+	
+	RETURN @RES
+
+END
+
+GO
+/****** Object:  UserDefinedFunction [dbo].[fn_TreeNameSmart]    Script Date: 2015-10-15 오후 4:42:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+-- 작성일 : 2014년 11월 05일
+-- 작성자 : 권혁진
+-- 기  능 : 스마트 IPG 카테고리 이름 반환
+-- 실  행 : SELECT dbo.fn_TreeName (1,1)
+-- 변경이력 :
+CREATE FUNCTION [dbo].[fn_TreeNameSmart]
+(
+	@ipgKey INT,
+	@selfNodeID BIGINT
+)
+RETURNS VARCHAR(50)
+
+AS
+BEGIN
+	DECLARE @RES VARCHAR(50);	
+
+	SELECT  @RES = 	nodeName	   
+	FROM dbo.IPGTreeSmart
+	WHERE ipgKey = @ipgKey AND selfNodeID = @selfNodeID
+	
+	RETURN @RES
+
+END
+
+GO

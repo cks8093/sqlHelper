@@ -1,0 +1,4038 @@
+﻿USE [SMART_API]
+GO
+/****** Object:  StoredProcedure [dbo].[dbSpaceManagement]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE procedure [dbo].[dbSpaceManagement]
+as
+select DB_NAME() AS DataBaseName, name, physical_name
+     , size * 8.00 / 1024.00 as size
+	 , case when max_size < 0 then '제한없음' else convert(varchar(10), convert(decimal(10,2), round((max_size * 8.00 / 1024.00),2))) + ' MB' end as max_size
+	 , convert(varchar(10), convert(decimal(18,2), round((growth * 8 / 1024.00),2))) + ' MB' as growth
+	 , case when max_size < 0 then 0.00 else convert(decimal(10,2), round((max_size * 8.00 / 1024.00),2)) end as maxsize
+  from .sys.database_files       
+ order by data_space_id
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_Category_Smart]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+/*
+	작성일 : 2014년 12월 02일  
+	작성자 : 권혁진
+	기  능 : VOD 브랜드관 추천 카테고리 
+	실  행 : EXECUTE dbo.[usp_Brand_Category_Smart]
+	변경이력 :
+*/
+
+CREATE PROCEDURE [dbo].[usp_Brand_Category_Smart] 
+	@ChrgPrdtCd varchar(100)= ''
+	,@isTest		char(1) = '1'
+	
+AS
+
+BEGIN
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_SmartSelect(@isTest));
+	SELECT ipgt.selfNodeID AS categorySeq
+		 , ipgt.sort AS sortOrder
+		 , ipgt.nodeName AS categoryName
+		 , ipgt.productDesc AS des
+		 , ipgt.ipgImgUrl AS ipgImgUrl
+		 , dbo.fn_Select_CPID(ipgt.selfNodeID) AS cpID
+		 , CASE WHEN dbo.fn_Is_SubCategory(@ipgKey, ipgt.selfNodeID) > 0 THEN 'Y' ELSE 'N' END AS hasChild
+		 , dbo.fn_PurchaseBuyYn(ipgt.selfNodeID, '', '', '', @ChrgPrdtCd) AS packBuyType
+	FROM dbo.IPGTreeSmart ipgt--#.IPG트리정보
+	WHERE ipgt.ipgKey = @ipgKey
+		AND ipgt.nodeLevel = 1 
+		AND ipgt.hiddenYN='Y' -- 'Y' 사용 -- 'N' 미사용
+	ORDER BY ipgt.sort, ipgt.updateDate, ipgt.regDate
+END
+
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_CategoryList]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+/*
+
+	작성일 : 2013년 08월 05일  
+
+	작성자 : 정수미 
+
+	기  능 : 카테고리별 VOD 매핑 리스트    
+
+	실  행 : EXECUTE dbo.usp_Brand_CategoryList 1,200,1,397,'1'
+	
+	EXECUTE dbo.usp_Brand_CategoryList 1,30,1,397
+
+
+	변경이력 : [2013-11-07, 김병희, 컨텐츠,시리즈 요금정보 일자비교 추가]
+
+*/
+
+CREATE PROCEDURE [dbo].[usp_Brand_CategoryList] 
+
+ 	 @startno	INT = 0
+
+	,@endno		INT = 0
+
+	,@mainCtgrID BIGINT
+
+	,@subCtgrID BIGINT
+
+	,@orderBy CHAR(1) = '1'
+
+AS  
+
+	SET NOCOUNT ON;
+
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+	-- 사용중인 IPGKEY 가져오기
+
+	DECLARE @IPGKEY INT = (SELECT DBO.FN_IPGKEY_SELECT());
+
+	DECLARE @MAINCTGRNAME	VARCHAR(50);
+	
+	SELECT  @MAINCTGRNAME = NODENAME FROM IPGTREE WHERE SELFNODEID = @MAINCTGRID AND IPGKEY = @IPGKEY;
+
+	SELECT *
+	FROM
+	(
+		SELECT COUNT(*) OVER() AS MAXCNT
+
+				  ,ROW_NUMBER() OVER(
+
+					ORDER BY (CASE WHEN @ORDERBY = '1' THEN TBL.REGDATE END) DESC,
+
+							 (CASE WHEN @ORDERBY = '2' THEN TBL.ISHOT END) DESC,
+
+  							 (CASE WHEN @ORDERBY = '3' THEN TBL.SUBTITLE END) ASC,	
+
+  							 (CASE WHEN @ORDERBY = '' THEN TBL.SORT END) ASC 
+
+						 ) AS NO
+				  ,TBL.CONTENTTYPE
+				  ,TBL.CONTENTID
+				  ,TBL.SUBTITLE
+				  ,TBL.POSTERFILEURL
+				  ,TBL.RATING
+				  ,TBL.ISONLYSD
+				  ,TBL.NODENAME AS SUBCTGRNAME
+				  ,TBL.SELFNODEID AS SUBCTGRID
+				  ,TBL.DIRECTOR AS DIRECTORS
+				  ,TBL.LOADACTOR AS ACTORS
+				  ,TBL.SUMMARY
+				  ,CEILING(CONVERT(FLOAT, TBL.PLAYTIME)/60) AS RUNTIME
+				  ,Y.GENRENAME AS GENRE
+				  ,@MAINCTGRID AS MAINCTGRID
+				  ,@MAINCTGRNAME AS MAINCTGRNAME
+				  ,CASE WHEN E.EVENTSEQ IS NOT NULL THEN 'E'
+
+						WHEN TBL.ISHOT = 'Y' THEN 'H'
+
+						WHEN DATEDIFF(DAY, TBL.REGDATE1, GETDATE()) <= 10 THEN 'N'
+
+						ELSE '0'
+
+					 END ICON
+		FROM 
+		(
+			SELECT A.REGDATE, B.ISHOT, A.SUBTITLE, A.SORT, A.CONTENTID, A.CONTENTTYPE, B.POSTERFILEURL, B.RATING, B.ISONLYSD, B.REGDATE AS REGDATE1, B.GENRESEQ
+								,B.DIRECTOR, B.PLAYTIME, B.LOADACTOR, B.SUMMARY, A.SELFNODEID, A.IPGKEY, F.NODENAME
+			FROM DBO.IPGTREE F --#.IPG트리정보
+			INNER JOIN DBO.IPGTREECONTENT A --#.IPG트리컨텐츠정보
+				ON F.SELFNODEID = A.SELFNODEID AND F.IPGKEY = A.IPGKEY AND F.IPGKEY = @IPGKEY
+			INNER JOIN DBO.CONTENTVOD B --#.컨텐츠VOD정보
+				ON A.CONTENTID= B.CONTENTID AND A.IPGKEY = B.IPGKEY 
+			INNER JOIN CONTENTVODPRICEINFO H --# VOD가격정보
+				ON A.CONTENTID = H.CONTENTID AND A.IPGKEY = H.IPGKEY
+			WHERE A.USEYN = 'Y'
+				AND GETDATE() BETWEEN H.EFCTSTARTDATE AND H.EFCTENDDATE
+				AND A.SELFNODEID = CASE WHEN @SUBCTGRID = 0 THEN A.SELFNODEID ELSE @SUBCTGRID END 
+				AND F.PARENTNODEID = CASE WHEN @SUBCTGRID = 0 THEN @MAINCTGRID ELSE F.PARENTNODEID END 
+
+			UNION
+
+			SELECT A.REGDATE, NULL AS ISHOT, A.SUBTITLE, A.SORT, A.CONTENTID, A.CONTENTTYPE, B.POSTERFILEURL, B.RATING, NULL AS ISONLYSD, B.REGDATE AS REGDATE1, B.GENRESEQ
+								,B.DIRECTOR, NULL AS PLAYTIME, B.LOADACTOR, B.SUMMARY, A.SELFNODEID, A.IPGKEY, F.NODENAME
+			FROM DBO.IPGTREE F --#.IPG트리정보
+			INNER JOIN DBO.IPGTREECONTENT A --#.IPG트리컨텐츠정보
+				ON F.SELFNODEID = A.SELFNODEID AND F.IPGKEY = A.IPGKEY AND F.IPGKEY = @IPGKEY
+			INNER JOIN DBO.SERIES B --#.시리즈정보
+				ON A.CONTENTID= B.SERIESID AND A.IPGKEY = B.IPGKEY 
+			INNER JOIN SERIESPRICEINFO H --# 시리즈가격정보
+				ON A.CONTENTID = H.SERIESID AND A.IPGKEY = H.IPGKEY
+			WHERE A.USEYN = 'Y'
+				AND GETDATE() BETWEEN H.EFCTSTARTDATE AND H.EFCTENDDATE
+				AND A.SELFNODEID = CASE WHEN @SUBCTGRID = 0 THEN A.SELFNODEID ELSE @SUBCTGRID END 
+				AND F.PARENTNODEID = CASE WHEN @SUBCTGRID = 0 THEN @MAINCTGRID ELSE F.PARENTNODEID END 
+			) TBL
+			LEFT OUTER JOIN SMART_CMS.DBO.RECOMGENREINFO Y --#.추천장르정보
+				ON TBL.GENRESEQ = Y.GENRESEQ
+			LEFT OUTER JOIN SMART_CMS.DBO.RECOMEVENTINFO E --#.추천이벤트정보
+				   ON TBL.CONTENTID = E.VODCODE AND E.STARTDATE <= GETDATE() AND E.ENDDATE >= GETDATE()
+		) TBL
+		WHERE TBL.[NO] BETWEEN @STARTNO AND @ENDNO;
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_CategoryList_0306]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+/*
+
+	작성일 : 2013년 08월 05일  
+
+	작성자 : 정수미 
+
+	기  능 : 카테고리별 VOD 매핑 리스트    
+
+	실  행 : EXECUTE dbo.usp_Brand_CategoryList 1,200,1,397,'1'
+	
+	EXECUTE dbo.usp_Brand_CategoryList_0306 1,30,1,397
+
+
+	변경이력 : [2013-11-07, 김병희, 컨텐츠,시리즈 요금정보 일자비교 추가]
+
+*/
+
+CREATE PROCEDURE [dbo].[usp_Brand_CategoryList_0306] 
+
+ 	 @startno	INT = 0
+
+	,@endno		INT = 0
+
+	,@mainCtgrID BIGINT
+
+	,@subCtgrID BIGINT
+
+	,@orderBy CHAR(1) = '1'
+
+AS  
+
+	SET NOCOUNT ON;
+
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+
+
+	-- 사용중인 IPGKEY 가져오기
+
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_Select());
+
+
+
+	print '@ipgKey:' +str(@ipgKey);
+
+	
+
+		WITH TBL
+
+		AS
+
+		(
+
+			SELECT COUNT(*) OVER() AS MAXCNT
+
+			  ,row_number() OVER(
+
+				ORDER BY (CASE WHEN @orderBy = '1' THEN A.regDate END) DESC,
+
+				         (CASE WHEN @orderBy = '2' THEN isHot END) DESC,
+
+  						 (CASE WHEN @orderBy = '3' THEN subTitle END) ASC,	
+
+  						 (CASE WHEN @orderBy = '' THEN A.sort END) ASC 
+
+					 ) AS NO
+
+			  ,A.contentType
+
+			  ,SMART_CMS.dbo.fn_SodCodeName (A.contentType,31) contentName
+
+			  ,A.contentID,A.sort,subTitle
+
+			  ,CASE A.contentType WHEN 'S' THEN C.posterFileUrl ELSE B.posterFileUrl END posterFileUrl
+
+			  ,isOnlySD
+
+			  ,CASE WHEN E.eventSeq IS NOT NULL THEN 'E'
+
+					WHEN isHot = 'Y' THEN 'H'
+
+					WHEN DATEDIFF(DAY,B.regDate,GETDATE()) <= 10 THEN 'N'
+
+					ELSE '0'
+
+				 END Icon
+
+			  ,ISNULL(B.rating,C.rating) rating
+
+			  -- 2013-10-12 윤찬영
+
+			  , @mainCtgrID as mainCtgrID
+
+			  , ISNULL(x.nodeName, '') as mainCtgrName
+
+			  , @subCtgrID as subCtgrID
+
+			  , ISNULL(z.nodeName, '') as subCtgrName
+
+			  -- 2013-10-13 윤찬영
+
+			  , ISNULL(y.genreName, G.genreName) as genre
+
+			  , ISNULL(B.director, C.director) as directors
+
+			  , CEILING(CONVERT(FLOAT, B.playTime)/60) as runtime
+
+			  , ISNULL(B.loadActor, C.loadActor) as actors
+
+			  , ISNULL(B.summary, C.summary) as summary
+
+			  										  
+
+			  -------------------------------------------------
+
+		  FROM dbo.IPGTreeContent A --#.IPG트리컨텐츠정보
+
+		  LEFT OUTER JOIN dbo.ContentVOD B --#.컨텐츠VOD정보
+
+			ON A.contentID= B.contentID AND contentType = 'C' AND B.useYN = 'Y' AND B.ipgKey = @ipgKey
+
+		  LEFT OUTER JOIN dbo.Series C --#.시리즈정보
+
+			ON A.contentID = C.seriesID AND C.useYN = 'Y' AND C.ipgKey = @ipgKey
+
+		  LEFT OUTER JOIN SMART_CMS.dbo.RecomEventInfo E --#.추천이벤트정보
+
+			   ON A.contentID = E.vodCode and vodType = 'C' AND E.startDate <= GETDATE() AND E.endDate >= GETDATE()
+
+		  LEFT OUTER JOIN dbo.IPGTree F --#.IPG트리정보
+
+			   ON A.selfNodeID = F.selfNodeID  AND F.ipgKey = @ipgKey
+
+		-- 2013-10-12 윤찬영
+
+		  INNER JOIN dbo.IPGTree x ON x.selfNodeID = @mainCtgrID --#.IPG트리정보
+
+			AND x.ipgKey = @ipgKey
+
+		  INNER JOIN dbo.IPGTree z ON z.selfNodeID = @subCtgrID --#.IPG트리정보
+
+			AND z.parentNodeID = @mainCtgrID
+
+			AND z.ipgKey = @ipgKey
+
+
+
+		-- 2013-10-13 윤찬영
+
+		  LEFT OUTER JOIN SMART_CMS.dbo.RecomGenreInfo y --#.추천장르정보
+
+			ON B.genreSeq = y.genreSeq
+
+		  LEFT OUTER JOIN SMART_CMS.dbo.RecomGenreInfo G --#.추천장르정보
+
+			ON C.genreSeq = G.genreSeq
+
+
+
+		--2014-02-20 최광섭 추가
+
+		LEFT OUTER JOIN contentVODPriceInfo H --# VOD가격정보
+
+			ON A.contentID = H.contentID AND H.ipgKey = @ipgKey and A.contentType  = 'C' 
+
+		LEFT OUTER JOIN SeriesPriceInfo I --# 시리즈가격정보
+
+			ON A.contentID = I.seriesID AND I.ipgKey = @ipgKey and A.contentType  = 'S' 
+
+		--2014-02-20 최광섭 추가
+
+		-------------------------------------------------------------------------------
+
+		  WHERE A.ipgKey = @ipgKey AND A.useYN = 'Y' 
+
+			AND A.selfNodeID = CASE WHEN @subCtgrID = 0 THEN A.selfNodeID ELSE @subCtgrID END 
+
+			AND F.parentNodeID = CASE WHEN @subCtgrID = 0 THEN @mainCtgrID ELSE F.parentNodeID END 
+
+			--#.[2013-11-07, 김병희, 요금이 설정되어 있는 컨텐츠, 시리즈 조건추가]
+
+			AND dbo.fn_ContentSeriesPriceYN_Select (a.contentType,a.contentID) = 'Y'
+
+			--2014-02-20 최광섭 추가
+
+			  AND 0 < case when H.contentID is not null AND H.efctEndDate >= getdate() AND H.efctStartDate < GETDATE() then 1
+
+		  				   when I.seriesID is not null AND I.efctEndDate >= getdate() then 1
+
+						   when H.contentID is null and I.seriesID is null then 0
+
+						   else 0 end
+
+			 
+			 
+			 --2014-02-20 최광섭 추가			
+
+		)
+
+		
+
+		SELECT * FROM TBL WHERE NO BETWEEN @startno AND @endno;
+
+
+
+
+
+
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_CategoryList_0911]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+/*
+
+	작성일 : 2013년 08월 05일  
+
+	작성자 : 정수미 
+
+	기  능 : 카테고리별 VOD 매핑 리스트    
+
+	실  행 : EXECUTE dbo.usp_Brand_CategoryList 1,200,1,397,'1'
+	
+	EXECUTE dbo.usp_Brand_CategoryList 1,30,1,397
+
+
+	변경이력 : [2013-11-07, 김병희, 컨텐츠,시리즈 요금정보 일자비교 추가]
+
+*/
+
+CREATE PROCEDURE [dbo].[usp_Brand_CategoryList_0911] 
+
+ 	 @startno	INT = 0
+
+	,@endno		INT = 0
+
+	,@mainCtgrID BIGINT
+
+	,@subCtgrID BIGINT
+
+	,@orderBy CHAR(1) = '1'
+
+AS  
+
+	SET NOCOUNT ON;
+
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+
+
+	-- 사용중인 IPGKEY 가져오기
+
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_Select());
+
+
+
+	print '@ipgKey:' +str(@ipgKey);
+
+	
+
+		WITH TBL
+
+		AS
+
+		(
+
+			SELECT COUNT(*) OVER() AS MAXCNT
+
+			  ,row_number() OVER(
+
+				ORDER BY (CASE WHEN @orderBy = '1' THEN A.regDate END) DESC,
+
+				         (CASE WHEN @orderBy = '2' THEN isHot END) DESC,
+
+  						 (CASE WHEN @orderBy = '3' THEN subTitle END) ASC,	
+
+  						 (CASE WHEN @orderBy = '' THEN A.sort END) ASC 
+
+					 ) AS NO
+
+			  ,A.contentType
+
+			  ,SMART_CMS.dbo.fn_SodCodeName (A.contentType,31) contentName
+
+			  ,A.contentID,A.sort,subTitle
+
+			  ,CASE A.contentType WHEN 'S' THEN C.posterFileUrl ELSE B.posterFileUrl END posterFileUrl
+
+			  ,isOnlySD
+
+			  ,CASE WHEN E.eventSeq IS NOT NULL THEN 'E'
+
+					WHEN isHot = 'Y' THEN 'H'
+
+					WHEN DATEDIFF(DAY,B.regDate,GETDATE()) <= 10 THEN 'N'
+
+					ELSE '0'
+
+				 END Icon
+
+			  ,ISNULL(B.rating,C.rating) rating
+
+			  -- 2013-10-12 윤찬영
+
+			  , @mainCtgrID as mainCtgrID
+
+			  , ISNULL(x.nodeName, '') as mainCtgrName
+
+			  , @subCtgrID as subCtgrID
+
+			  , ISNULL(z.nodeName, '') as subCtgrName
+
+			  -- 2013-10-13 윤찬영
+
+			  , ISNULL(y.genreName, G.genreName) as genre
+
+			  , ISNULL(B.director, C.director) as directors
+
+			  , CEILING(CONVERT(FLOAT, B.playTime)/60) as runtime
+
+			  , ISNULL(B.loadActor, C.loadActor) as actors
+
+			  , ISNULL(B.summary, C.summary) as summary
+
+			  										  
+
+			  -------------------------------------------------
+
+		  FROM dbo.IPGTreeContent A --#.IPG트리컨텐츠정보
+
+		  LEFT OUTER JOIN dbo.ContentVOD B --#.컨텐츠VOD정보
+
+			ON A.contentID= B.contentID AND contentType = 'C' AND B.useYN = 'Y' AND B.ipgKey = @ipgKey
+
+		  LEFT OUTER JOIN dbo.Series C --#.시리즈정보
+
+			ON A.contentID = C.seriesID AND C.useYN = 'Y' AND C.ipgKey = @ipgKey
+
+		  LEFT OUTER JOIN SMART_CMS.dbo.RecomEventInfo E --#.추천이벤트정보
+
+			   ON A.contentID = E.vodCode and vodType = 'C' AND E.startDate <= GETDATE() AND E.endDate >= GETDATE()
+
+		  LEFT OUTER JOIN dbo.IPGTree F --#.IPG트리정보
+
+			   ON A.selfNodeID = F.selfNodeID  AND F.ipgKey = @ipgKey
+
+		-- 2013-10-12 윤찬영
+
+		  INNER JOIN dbo.IPGTree x ON x.selfNodeID = @mainCtgrID --#.IPG트리정보
+
+			AND x.ipgKey = @ipgKey
+
+		  INNER JOIN dbo.IPGTree z ON z.selfNodeID = @subCtgrID --#.IPG트리정보
+
+			AND z.parentNodeID = @mainCtgrID
+
+			AND z.ipgKey = @ipgKey
+
+
+
+		-- 2013-10-13 윤찬영
+
+		  LEFT OUTER JOIN SMART_CMS.dbo.RecomGenreInfo y --#.추천장르정보
+
+			ON B.genreSeq = y.genreSeq
+
+		  LEFT OUTER JOIN SMART_CMS.dbo.RecomGenreInfo G --#.추천장르정보
+
+			ON C.genreSeq = G.genreSeq
+
+
+
+		--2014-02-20 최광섭 추가
+
+		LEFT OUTER JOIN contentVODPriceInfo H --# VOD가격정보
+
+			ON A.contentID = H.contentID AND H.ipgKey = @ipgKey and A.contentType  = 'C' 
+
+		LEFT OUTER JOIN SeriesPriceInfo I --# 시리즈가격정보
+
+			ON A.contentID = I.seriesID AND I.ipgKey = @ipgKey and A.contentType  = 'S' 
+
+		--2014-02-20 최광섭 추가
+
+		-------------------------------------------------------------------------------
+
+		  WHERE A.ipgKey = @ipgKey AND A.useYN = 'Y' 
+
+			AND A.selfNodeID = CASE WHEN @subCtgrID = 0 THEN A.selfNodeID ELSE @subCtgrID END 
+
+			AND F.parentNodeID = CASE WHEN @subCtgrID = 0 THEN @mainCtgrID ELSE F.parentNodeID END 
+
+			--#.[2013-11-07, 김병희, 요금이 설정되어 있는 컨텐츠, 시리즈 조건추가]
+
+			AND dbo.fn_ContentSeriesPriceYN_Select (a.contentType,a.contentID) = 'Y'
+
+			--2014-02-20 최광섭 추가
+
+			  AND 0 < case when H.contentID is not null AND H.efctEndDate >= getdate() AND H.efctStartDate < GETDATE() then 1
+
+		  				   when I.seriesID is not null AND I.efctEndDate >= getdate()  AND I.efctStartDate < getdate() then 1
+
+						   when H.contentID is null and I.seriesID is null then 0
+
+						   else 0 end
+
+			 
+			 
+			 --2014-02-20 최광섭 추가			
+
+		)
+
+		
+
+		SELECT * FROM TBL WHERE NO BETWEEN @startno AND @endno;
+
+
+
+
+
+
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_CategoryListSmart]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+/*
+
+	작성일 : 20134년 11월 05일  
+
+	작성자 : 최광섭 
+
+	기  능 : 카테고리별 VOD 매핑 리스트(스마트)   
+
+	실  행 : EXECUTE dbo.usp_Brand_CategoryListSmart @startno=1,@endno=10,@mainCtgrID=500,@subCtgrID=504,@orderBy=N'1',@ChrgPrdtCd='M021111,M011111,M001111'
+
+
+	변경이력 : [2013-11-07, 김병희, 컨텐츠,시리즈 요금정보 일자비교 추가]
+
+*/
+
+CREATE PROCEDURE [dbo].[usp_Brand_CategoryListSmart] 
+
+ 	 @startno	INT = 0
+
+	,@endno		INT = 0
+
+	,@mainCtgrID BIGINT
+
+	,@subCtgrID BIGINT
+
+	,@orderBy CHAR(1) = '1'
+
+	,@ChrgPrdtCd VARCHAR(100)
+	,@isTest		char(1) = '1'
+AS  
+
+	SET NOCOUNT ON;
+
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+
+
+-- 사용중인 IPGKEY 가져오기
+DECLARE @ipgKey INT = (SELECT dbo.fn_IPGKey_SmartSelect(@isTest));
+
+PRINT '@ipgKey:' + Str(@ipgKey);
+
+WITH tbl
+     AS (SELECT Count(*)
+                  OVER()                                                    AS
+                MAXCNT
+                ,
+                Row_number()
+                  OVER(
+                    ORDER BY (CASE WHEN @orderBy = '1' THEN A.regDate END) DESC,
+
+				         (CASE WHEN @orderBy = '2' THEN isHot END) DESC,
+
+  						 (CASE WHEN @orderBy = '3' THEN subTitle END) ASC,	
+
+  						 (CASE WHEN @orderBy = '' THEN A.sort END) ASC 
+
+					 ) AS NO,
+                A.contentType,
+                A.contentID,
+                A.sort,
+                A.subTitle,
+                A.ipgKey,
+                case when ISNULL(posterHDFileUrl, '') = '' then posterFileUrl else posterHDFileUrl end posterFileUrl,
+                B.rating,
+                B.isOnlySD,
+                B.isHot,
+                B.regDate,
+                A.selfNodeID,
+                B.genreSeq,
+                B.director,
+                B.playTime,
+                B.loadActor,
+                B.summary
+         -------------------------------------------------
+         FROM   dbo.ipgtreecontentsmart A --#.IPG트리컨텐츠정보
+                LEFT OUTER JOIN dbo.contentvod B --#.컨텐츠VOD정보
+                             ON A.contentID = B.contentID
+                                AND contentType = 'C'
+                                AND B.useYN = 'Y'
+                                AND B.ipgKey = @ipgKey
+                --2014-02-20 최광섭 추가
+                LEFT OUTER JOIN contentvodpriceinfo H --# VOD가격정보
+                             ON A.contentID = H.contentID
+                                AND H.ipgKey = @ipgKey
+                                AND A.contentType = 'C'
+                LEFT OUTER JOIN seriespriceinfo I --# 시리즈가격정보
+                             ON A.contentID = I.seriesID
+                                AND I.ipgKey = @ipgKey
+                                AND A.contentType = 'S'
+         --2014-02-20 최광섭 추가
+         -------------------------------------------------------------------------------
+         WHERE  A.ipgKey = @ipgKey
+                AND A.useYN = 'Y'
+                AND A.selfNodeID = @subCtgrID
+                --#.[2013-11-07, 김병희, 요금이 설정되어 있는 컨텐츠, 시리즈 조건추가]
+                --AND dbo.fn_ContentSeriesPriceYN_Select (a.contentType,a.contentID) = 'Y'
+                --2014-02-20 최광섭 추가
+                AND 0 < CASE
+                          WHEN H.contentID IS NOT NULL
+                               AND H.efctEndDate >= Getdate()
+                               AND H.efctStartDate < Getdate() THEN 1
+                          WHEN I.seriesID IS NOT NULL
+                               AND I.efctEndDate >= Getdate()
+                               AND I.efctStartDate < Getdate() THEN 1
+                          WHEN H.contentID IS NULL
+                               AND I.seriesID IS NULL THEN 0
+                          ELSE 0
+                        END
+        --2014-02-20 최광섭 추가			
+        )
+SELECT a.MAXCNT,
+	   a.contentType,
+       SMART_CMS.dbo.Fn_sodcodename (A.contentType, 31) contentName,
+       A.contentID,
+       A.sort,
+       A.subTitle,
+       CASE A.contentType
+         WHEN 'S' THEN C.posterFileUrl
+         ELSE a.posterFileUrl
+       END                                            posterFileUrl,
+       a.isOnlySD,
+       CASE when k.eventSeq is not null then 'E'
+         WHEN isHot = 'Y' THEN 'H'
+         WHEN Datediff(day, a.regDate, Getdate()) <= 10 THEN 'N'
+         ELSE '0'
+       END                                            Icon,
+       Isnull(a.rating, C.rating)                     rating,
+       dbo.fn_IPGTree_Select_MAINNODEID(@subCtgrID,@ipgKey) AS mainCtgrID,
+       IC2.selfNodeID                                   AS subCtgrID,
+       dbo.fn_TreeNameSmart(@ipgKey,dbo.fn_IPGTree_Select_MAINNODEID(@subCtgrID,@ipgKey)) AS mainCtgrName,
+       IC2.nodeName                                   AS subCtgrName,
+       Isnull(y.genreName, G.genreName)               AS genre,
+       Isnull(a.director, C.director)                 AS directors,
+       Ceiling(CONVERT(FLOAT, a.playTime) / 60)       AS runtime,
+       Isnull(a.loadActor, C.loadActor)               AS actors,
+       Isnull(a.summary, C.summary)                   AS summary
+       ,dbo.Fn_ipgtreecontentprice(@subCtgrID, a.contentType, @ChrgPrdtCd, a.contentID,@isTest) AS contentPrice
+FROM   tbl a
+       INNER JOIN ipgtreesmart IC2
+               ON A.selfNodeID = IC2.selfNodeID
+                  AND A.ipgKey = IC2.ipgKey
+       LEFT OUTER JOIN dbo.series C --#.시리즈정보
+                    ON A.contentID = C.seriesID
+                       AND C.useYN = 'Y'
+                       AND A.ipgKey = C.ipgKey
+       LEFT OUTER JOIN SMART_CMS.dbo.recomgenreinfo y --#.추천장르정보
+                    ON a.genreSeq = y.genreSeq
+       LEFT OUTER JOIN SMART_CMS.dbo.recomgenreinfo G --#.추천장르정보
+                    ON C.genreSeq = G.genreSeq
+	   LEFT OUTER JOIN SMART_CMS.dbo.RecomEventInfo k with(nolock)
+					ON a.contentID = k.vodCode 
+					AND k.vodType = 'C' 
+					AND (k.startDate <= GETDATE() and k.endDate >= GETDATE())
+WHERE  NO BETWEEN @startno AND @endno; 
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_ContentsDetail]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+/*
+
+	작성일 : 2013년 08월 06일  
+
+	작성자 : 정수미 
+
+	기 능  : VOD 브랜드관 VOD 상세 정보    
+
+	실  행 : EXEC dbo.usp_Brand_ContentsDetail  'C131007V022003','','136358891330','0007694595_1', 1, ''
+
+	EXEC dbo.usp_Brand_ContentsDetail  'C140106V051001','','136358888804','0007487044_1', 1, ''
+
+	변경이력 : 
+
+*/
+
+CREATE PROCEDURE [dbo].[usp_Brand_ContentsDetail] 
+
+	 @contentID char(14)
+
+	,@seriesID char(14) = NULL
+
+	,@SCID VARCHAR(20)
+
+	,@contractID VARCHAR(20)
+
+    ,@mainCate BIGINT = 0
+
+    ,@ChrgPrdtCd VARCHAR(100) =''
+
+AS  
+
+	SET NOCOUNT ON;
+
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+
+
+    --0으로 나누기 오류 예방
+
+    SET ANSI_WARNINGS ON;	-- 링크드 서버 연결때문에 ON으로 수정..
+
+    SET ARITHIGNORE ON;
+
+    SET ARITHABORT OFF;
+
+ 
+
+ 	-- 사용중인 IPGKEY 가져오기
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_Select());
+	
+
+	--카테고리별 월정액 정보 
+
+	DECLARE @packValue varchar(200),@packString varchar(200)
+
+	SELECT @packValue = name,@packString = B.code
+
+	FROM dbo.IPGTree A --#.IPG트리정보
+
+	INNER JOIN SMART_CMS.dbo.SodPackage B --#.월정액상품정보
+
+		ON A.packageCode = B.code AND gubun = 'V'
+
+	WHERE ipgKey = @ipgKey AND selfNodeID = @mainCate
+
+
+
+	-- 쿠키로 들어온 월정액 정보
+
+	DECLARE @CTABLE TABLE
+
+	(
+
+		codeString VARCHAR(12)
+
+	)
+
+	
+
+	INSERT INTO @CTABLE (codeString)
+
+	SELECT VALUE				   
+
+	FROM dbo.fn_Split_Tbl (@ChrgPrdtCd,',')
+
+
+
+	--구매여부 확인
+
+	DECLARE @buyType CHAR(1) = 'N';
+	PRINT 'init buyType = ' + @buyType
+	--월정액 구매 여부 확인
+
+	IF EXISTS ( 		
+
+		SELECT *
+
+		FROM @CTABLE A
+
+		INNER JOIN SMART_CMS.dbo.SodPackage C --#.월정액상품정보
+
+			ON A.codeString = C.code AND gubun = 'V'
+
+		INNER JOIN dbo.IPGTree B --#.IPG트리정보
+
+			ON B.packageCode = C.code
+
+		WHERE ipgKey = @ipgKey AND selfNodeID = @mainCate
+
+	) BEGIN	
+
+		SET @buyType = 'P';		
+		
+	  END	 
+	  
+
+	-- 시리즈, 단편 구매 여부 확인	   
+
+	ELSE
+
+		BEGIN		
+
+		print 'seriesID ' + @seriesID
+
+			SELECT TOP 1 @buyType = purType
+
+			FROM SMART_CMS.dbo.Purchase --#.구매내역정보
+
+			WHERE ( 
+
+					  contentID = @contentID 
+
+					  OR (@seriesID <> '' AND seriesID = @seriesID)
+
+				  )
+
+				  AND expireDate >= GETDATE() AND (isRefundment !=  'Y' OR isRefundment IS NULL)	-- 유효일자 체크
+
+				  AND legacyId = [dbo].[fn_Split](@contractID,'_', 0) + [dbo].[fn_Split](@contractID,'_', 1)
+
+			ORDER BY purType DESC;
+
+			
+			print 'contractID ' + @contractID;
+			PRINT 'legacyID ' + [dbo].[fn_Split](@contractID,'_', 0) + [dbo].[fn_Split](@contractID,'_', 1) + ' 구매내역정보 ' + @buyType;
+
+			declare @ccID varchar(20);
+			set @ccID = [dbo].[fn_Split](@contractID,'_', 0) + [dbo].[fn_Split](@contractID,'_', 1)
+			print 'ccID ' + @ccID;
+		END
+
+	
+
+	--jumpingPoint 정보
+
+	DECLARE @jumpingPoint INT;
+
+	SELECT TOP 1 @jumpingPoint = ISNULL(jumpingPoint,0)
+
+	FROM CUA.SMART_CUA.dbo.PlayList --#.시청정보
+
+	WHERE contractID = @contractID 
+
+		AND contentID = @contentID
+
+		AND endDate IS NOT NULL
+
+	ORDER BY endDate DESC
+
+	
+
+	--VOD 상세 정보					 
+
+	SELECT A.contentID,A.title ,CEILING(CONVERT(FLOAT,A.playTime)/60) playTime
+
+		 ,CASE WHEN DATEDIFF(DAY,A.regDate,GETDATE()) < 10 THEN 'Y' ELSE 'N' END isNew
+
+		 ,CASE WHEN isOnlySD = 'Y' OR isOnlySD = '0' THEN '0' ELSE '1' END isOnlySD,A.genreSeq,genreName ,A.isAdultCategory 
+
+		 ,A.rating,A.maxViewingLength
+
+		 ,director ,loadActor ,produce ,produceYear ,writer ,country ,keyword ,summary
+
+		 ,posterFilePath ,posterFileUrl ,rtrim(previewContentID) as previewContentID
+
+		 ,E.title previewTitle,@packValue packagename,@packString packString
+
+		  ,ISNULL(H.noOfSeries,0) noOfSeries
+
+		  ,@buyType buyYN
+
+	    ,CASE WHEN J.eventSeq IS NOT NULL THEN 'E'
+
+			WHEN isHot = 'Y' THEN 'H'
+
+			WHEN DATEDIFF(DAY,A.regDate,GETDATE()) <= 10 THEN 'N'
+
+			ELSE '0'
+
+	     END Icon
+
+	     ,ISNULL(price,0) price
+
+	     ,ISNULL(@jumpingPoint,0) jumpingPoint
+
+      FROM dbo.ContentVOD A --#.컨텐츠VOD정보
+
+	  LEFT OUTER JOIN SMART_CMS.dbo.RecomGenreInfo B --#.추천장르정보
+
+		ON A.genreSeq = B.genreSeq
+
+	  LEFT OUTER JOIN SMART_CMS.dbo.ContentPreview E --#.예고편
+
+		ON A.previewContentID = E.contentID
+
+	  LEFT OUTER JOIN SMART_CMS.dbo.ContentVODFileOrg F --#.VOD컨텐츠원본파일정보
+
+	    ON A.contentID = F.contentID
+
+	  LEFT OUTER JOIN SMART_CMS.dbo.ContentReqMngResult G --#.컨텐츠녹화정보
+
+		ON A.contentID = G.contentID
+
+	  LEFT OUTER JOIN dbo.SeriesContent H --#.시리즈컨텐츠정보
+
+		ON A.contentID = H.contentID AND H.ipgKey = @ipgKey AND seriesID = @seriesID AND H.startDate <= GETDATE() AND H.endDate >= GETDATE()
+
+	  LEFT OUTER JOIN SMART_CMS.dbo.RecomEventInfo J --#.추천이벤트정보
+
+		ON A.contentID = J.vodCode and vodType = 'C'
+
+	  LEFT OUTER JOIN dbo.contentVODPriceInfo K --#.컨텐츠가격정보
+
+		ON A.contentID = K.contentID AND K.ipgKey = @ipgKey AND K.efctStartDate <= GETDATE() AND K.efctEndDate>= GETDATE()
+
+	  WHERE A.ipgKey = @ipgKey AND A.contentID = @contentID AND A.useYN = 'Y'
+
+	  
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_ContentsDetail_Smart]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+/*
+
+	작성일 : 2014년 11월 14일  
+	작성자 : 권혁진
+	기 능  : Smart VOD 브랜드관 VOD 상세 정보    
+	실  행 : EXEC dbo.[usp_Brand_ContentsDetail_Smart]  'C131007V022003','','136358891330','0007694595_1', 1, ''
+	EXEC dbo.usp_Brand_ContentsDetail  'C140106V051001','','136358888804','0007487044_1', 1, ''
+	변경이력 : 
+
+*/
+
+CREATE PROCEDURE [dbo].[usp_Brand_ContentsDetail_Smart] 
+
+	 @contentID char(14)
+
+	,@seriesID char(14) = NULL
+
+	,@SCID VARCHAR(20)
+
+	,@contractID VARCHAR(20)
+
+    ,@mainCate BIGINT = 0
+
+    ,@ChrgPrdtCd VARCHAR(100) =''
+    
+    ,@subCtgrID BIGINT = 0
+
+	,@isTest	char(1) = '1'
+
+AS  
+ /* 
+    C : 단편
+	S : 시리즈
+	P : 월정액
+	I : 월정액 내 단품
+	J : 월정액 내 시리즈
+	E : 이벤트 
+	F : 월정액 내 이벤트
+	K : 패키지
+	G : 월정액 내 패키지
+	*/
+
+	SET NOCOUNT ON;
+
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+
+
+    --0으로 나누기 오류 예방
+
+    SET ANSI_WARNINGS ON;	-- 링크드 서버 연결때문에 ON으로 수정..
+
+    SET ARITHIGNORE ON;
+
+    SET ARITHABORT OFF;
+
+ 	-- 사용중인 IPGKEY 가져오기
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_SmartSelect(@isTest));
+	
+	
+	--구매여부 확인
+	DECLARE @buyType CHAR(1) = 'N';
+	select @buyType = dbo.fn_PurchaseBuyYn (
+		@subCtgrID
+		, CASE WHEN ISNULL(@seriesID, '') = '' THEN 'C' ELSE 'S' END
+		, CASE WHEN ISNULL(@seriesID, '') = '' THEN @contentID ELSE @seriesID END
+		, @contractID
+		, @ChrgPrdtCd)
+	PRINT 'buyType = ' + @buyType;
+	
+	--가격타입, 가격, 상품기타고드 가져오기
+	--리턴값 (최종적용가격,최종가격타입,월정액적용시코드,이벤트또는패키지일때코드)
+	DECLARE @result VARCHAR(50), @price int, @purID char(7), @packString char(7), @purName varchar(20), @contentPriceType char(1),@packValue varchar(200), @cpID varchar(12);
+	select @result = dbo.fn_IpgTreeContentPrice(@subCtgrID, 'C', @ChrgPrdtCd, @contentID, @isTest);
+	set @price = CAST([dbo].[fn_Split](@result,',',0) as int); --최종적용가격
+	set @contentPriceType = [dbo].[fn_Split](@result,',',1); --최종가격타입
+	set @packString = [dbo].[fn_Split](@result,',',2); --월정액적용시코드
+	set @purID = [dbo].[fn_Split](@result,',',3); --이벤트또는패키지일때코드
+	
+	--카테고리의 CP정보 가져오기
+	declare @cp_selfnodeid bigint = dbo.[fn_IPGTree_Select_MAINNODEID](@subCtgrID, @isTest);
+	select @cpID = cpID
+	from IpgCpMappingSmart where selfNodeID = @cp_selfnodeid
+
+	--카테고리별 월정액 정보 
+	SELECT @packValue = name
+	FROM SMART_CMS.dbo.SodPackage--#.월정액상품정보
+	WHERE code = @packString;		
+	
+	--jumpingPoint 정보
+	DECLARE @jumpingPoint INT;
+
+	SELECT TOP 1 @jumpingPoint = ISNULL(jumpingPoint,0)
+
+	FROM CUA.SMART_CUA.dbo.PlayList --#.시청정보
+
+	WHERE contractID = @contractID 
+
+		AND contentID = @contentID
+
+		AND endDate IS NOT NULL
+
+	ORDER BY endDate DESC
+
+	
+
+	--VOD 상세 정보	
+	SELECT A.contentID,A.title ,CEILING(CONVERT(FLOAT,A.playTime)/60) playTime
+
+		 ,CASE WHEN DATEDIFF(DAY,A.regDate,GETDATE()) < 10 THEN 'Y' ELSE 'N' END isNew
+
+		 ,CASE WHEN isOnlySD = 'Y' OR isOnlySD = '0' THEN '0' ELSE '1' END isOnlySD,A.genreSeq,genreName ,A.isAdultCategory 
+
+		 ,A.rating,A.maxViewingLength
+
+		 ,director ,loadActor ,produce ,produceYear ,writer ,country ,keyword ,summary
+
+		 ,case when ISNULL(posterHDFilePath, '') = '' then posterFilePath else posterHDFilePath end posterFilePath
+		 ,case when ISNULL(posterHDFileUrl, '') = '' then posterFileUrl else posterHDFileUrl end posterFileUrl 
+
+		  ,rtrim(previewContentID) as previewContentID
+
+		 ,E.title previewTitle,@packValue packagename,@packString packString
+
+		  ,ISNULL(H.noOfSeries,0) noOfSeries
+
+		  ,@buyType buyYN
+		  ,@contentPriceType contentPriceType
+		  
+
+	    ,CASE WHEN @contentPriceType in ('E','F') THEN 'E'
+
+			WHEN isHot = 'Y' THEN 'H'
+
+			WHEN DATEDIFF(DAY,A.regDate,GETDATE()) <= 10 THEN 'N'
+
+			ELSE '0'
+
+	     END Icon
+
+	     ,ISNULL(@price,0) price
+
+	     ,ISNULL(@jumpingPoint,0) jumpingPoint
+	     
+	     ,@cpID as packageCpID --카테고리CPID
+	     
+	     ,case when @contentPriceType in ('K','G') then @purID else '' end as packageID
+
+      FROM dbo.ContentVOD A --#.컨텐츠VOD정보
+
+	  LEFT OUTER JOIN SMART_CMS.dbo.RecomGenreInfo B --#.추천장르정보
+
+		ON A.genreSeq = B.genreSeq
+
+	  LEFT OUTER JOIN SMART_CMS.dbo.ContentPreview E --#.예고편
+
+		ON A.previewContentID = E.contentID
+
+	  LEFT OUTER JOIN dbo.SeriesContent H --#.시리즈컨텐츠정보
+
+		ON A.contentID = H.contentID AND H.ipgKey = @ipgKey AND seriesID = @seriesID AND H.startDate <= GETDATE() AND H.endDate >= GETDATE()
+
+	  LEFT OUTER JOIN dbo.contentVODPriceInfo K --#.컨텐츠가격정보
+
+		ON A.contentID = K.contentID AND K.ipgKey = @ipgKey AND K.efctStartDate <= GETDATE() AND K.efctEndDate>= GETDATE()
+		
+	  LEFT OUTER JOIN SMART_CMS.dbo.SodCodeDetail L --#.공통코드 연령
+
+		ON L.codeKey = 9 AND A.rating = L.detailKey 
+	
+	  WHERE A.ipgKey = @ipgKey AND A.contentID = @contentID AND A.useYN = 'Y'
+	  
+
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_CPRecomList_Smart]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+/*
+	작성일 : 2014년 12월 08일  
+	작성자 : 유선모 
+	기  능 : CP gate별 What's New Today 리스트
+	실  행 : EXECUTE dbo.usp_Brand_CPRecomList_Smart 1, 1, 'M001111, M021111'
+	변경이력 :
+*/
+CREATE PROCEDURE [dbo].[usp_Brand_CPRecomList_Smart] 
+	@NO bigint
+	, @mainCtgrID BIGINT
+	, @ChrgPrdtCd VARCHAR(100) = ''
+	,@isTest		char(1) = '1'
+AS  
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+	-- 사용중인 IPGKEY 가져오기
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_SmartSelect(@isTest));
+	--SELECT @ipgKey = ipgKey
+	--FROM dbo.IPGInfo --#.IPG정보
+	--WHERE serviceYn = 'Y' AND delYn = 'N';
+	
+	with tbl
+	as
+	(
+	SELECT TOP(5) 
+	'1' as NO
+		, C.sortOrder as sortOrder
+		, ISNULL(D.contentType,'') as contentType
+		, ISNULL(D.SELFNODEID,'') AS subCtgrID
+		, isnull(dbo.fn_TreeNameSmart(@ipgKey,D.SELFNODEID),'') as subCtgrName
+		, isnull(H.seriesid,'') as seriesID
+		, C.contentID
+		, ISNULL(D.subTitle,'') title
+		, C.FILENAME AS posterFileUrl
+		, ISNULL(I.genreName, '') as genre
+		, ISNULL(E.director, '') as directors
+		, isnull(CEILING(CONVERT(FLOAT,E.playTime)/60),'') as runtime
+		, ISNULL(E.loadActor, '') as actors
+		, ISNULL(E.summary, '') as summary
+		, isnull(e.rating,'') as rating
+		, dbo.fn_IpgTreeContentPrice (D.SELFNODEID, contentType, @ChrgPrdtCd, C.contentID, @isTest) as contentPrice
+		, case when isnull(d.contentid,'') = '' then 'N'
+				when isnull(f.contentid,'') = '' then 'N'
+				else 'Y' end mappingYn
+	FROM SMART_CMS.dbo.IpgCpMapping A
+	INNER JOIN SMART_CMS.DBO.RECOMCPMASTER B
+	ON A.CPID = B.CPID
+	INNER JOIN SMART_CMS.DBO.RECOMCPVODINFO C
+	ON B.RECOMSEQ = C.RECOMSEQ
+	LEFT OUTER JOIN IPGTREECONTENTSMART D
+	ON C.CONTENTID = D.CONTENTID AND D.IPGKEY = @ipgKey
+	LEFT JOIN CONTENTVOD E
+	ON D.CONTENTID = E.CONTENTID AND E.IPGKEY = @ipgKey
+	LEFT JOIN CONTENTVODPRICEINFO F
+	ON D.CONTENTID = F.CONTENTID AND F.IPGKEY = @ipgKey AND F.EFCTSTARTDATE <= GETDATE() AND F.EFCTENDDATE >= GETDATE()
+	LEFT JOIN IPGPACKAGEMAPPING G
+	ON D.SELFNODEID = G.SELFNODEID AND G.IPGKEY = @ipgKey
+	LEFT JOIN SERIESCONTENT H
+	ON D.CONTENTID = H.CONTENTID AND H.IPGKEY = @ipgKey AND H.USEYN = 'Y' 
+	LEFT JOIN SMART_CMS.dbo.RecomGenreInfo I
+	ON E.GENRESEQ = I.GENRESEQ
+	WHERE A.SELFNODEID = @mainCtgrID
+	AND B.USEYN = 'Y'
+	AND dbo.fn_ContentSeriesPriceYN_Select (d.contentType,e.contentID) = 'Y'
+	ORDER BY sortOrder
+	)
+	select * from TBL where NO = @NO
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_PackageDetail_Smart]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+/*
+	 작성일 : 2014년 11월 10일  
+	 작성자 : 최광섭 
+	 기  능 : VOD 브랜드관 패키지 상세정보     
+	 실  행 : exec dbo.[usp_Brand_PackageDetail_Smart] 1,50,'3333333',479,'',545,''
+	 변경이력 :
+*/
+CREATE PROCEDURE [dbo].[usp_Brand_PackageDetail_Smart] 
+	@startno    INT = 0,
+    @endno      INT = 0,
+    @packageID  CHAR(7),
+    @mainCtgrID BIGINT = 0,
+    @ChrgPrdtCd VARCHAR(100) = '',
+    @subCtgrID  BIGINT = 0,
+    @contractID VARCHAR(20)
+AS
+    SET nocount ON;
+    SET TRANSACTION isolation level READ uncommitted;
+
+    -- 사용중인 IPGKEY 가져오기
+    DECLARE @ipgKey INT = (SELECT dbo.Fn_ipgkey_select());
+    DECLARE @prdtCd VARCHAR(7) = '';
+    DECLARE @prdtName NVARCHAR(50) = ''
+
+    --카테고리별 월정액 정보	
+    SELECT @prdtCd = packageCode,
+           @prdtName = NAME
+    FROM   dbo.ipgtree A --IPG트리정보
+           INNER JOIN SMART_CMS.dbo.sodpackage B --#.월정액상품정보
+                   ON A.packageCode = B.code
+                      AND gubun = 'V'
+    WHERE  ipgKey = @ipgKey
+           AND selfNodeID = @subCtgrID
+
+    --패키지 기본정보
+    SELECT title AS packageTitle,
+           validDays,
+           description,
+           B.cpID
+    FROM   SMART_CMS.dbo.package A --#.패키지정보
+           INNER JOIN ipgpackagemapping B --#.패키지 트리 매핑정보
+                   ON A.packageID = B.packageID
+                      AND B.ipgKey = @ipgKey
+    WHERE  A.packageID = @packageID
+           AND isUse = 'Y';
+
+    --패키지 상세 정보
+    SELECT *,
+           CASE
+             WHEN no = 1 THEN dbo.Fn_ipgtreecontentprice (selfNodeID, 'C',
+                              @ChrgPrdtCd,
+                              contentID) --패키지는 컨텐츠
+             ELSE ''
+           END resultPrice,
+           CASE
+             WHEN no = 1 THEN dbo.Fn_purchasebuyyn (selfNodeID, 'C', contentID,
+                              @contractID
+                              , @ChrgPrdtCd) --패키지는 컨텐츠
+             ELSE ''
+           END buyPackage
+    FROM   (SELECT Row_number()
+                     OVER(
+                       ORDER BY B.sort, B.regDate DESC) no,
+                   COUNT(*) OVER() AS MAXCNT,
+                   B.contentID,
+                   A.selfNodeID,
+                   E.isHot,
+                   A.regDate,
+                   CASE
+                     WHEN isHot = 'Y' THEN 'H'
+                     WHEN Datediff(day, E.regDate, Getdate()) <= 10 THEN 'N'
+                     ELSE '0'
+                   END                                  Icon,
+                   @mainCtgrID                          mainCate,
+                   @prdtCd                              prdtCd,
+                   @prdtName                            prdtName
+            FROM   ipgtreesmart A --#.패키지트리정보
+                   INNER JOIN ipgtreecontentsmart B
+                           --#.패키지 트리 컨텐츠정보
+                           ON A.selfNodeID = B.selfNodeID
+                              AND A.ipgKey = B.ipgKey
+                   INNER JOIN ipgpackagemapping C
+                           --#.패키지 트리 매핑정보
+                           ON A.selfNodeID = C.selfNodeID
+                              AND A.ipgKey = C.ipgKey
+                   INNER JOIN SMART_CMS.dbo.package D --#.패키지정보 정보
+                           ON C.packageID = D.packageID
+                   INNER JOIN contentvod E --#.컨텐츠정보 정보
+                           ON B.contentID = E.contentID
+                              AND B.ipgKey = E.ipgKey
+            WHERE  A.ipgKey = @ipgKey
+                   AND A.hiddenYN = 'Y'
+                   AND C.packageID = @packageID
+                   AND D.isUse = 'Y'
+                   AND A.selfNodeID = @subCtgrID) tbl 
+            WHERE NO BETWEEN @startno AND @endno;
+
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_RecentList]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+/*
+	작성일 : 2013년 08월 05일  
+	작성자 : 정수미 
+	기  능 : 브랜드관 상세 정보 Main(Recent)   
+	실  행 : EXECUTE dbo.usp_Brand_RecentList 396
+	변경이력 :
+*/
+CREATE PROCEDURE [dbo].[usp_Brand_RecentList] 
+	@mainCtgrID BIGINT
+AS  
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+	-- 사용중인 IPGKEY 가져오기
+	DECLARE @ipgKey INT = [dbo].fn_IPGKey_Select();
+
+	--카테고리별 월정액 정보		
+	SELECT ISNULL(packageCode,'') packageCode,ISNULL(name,'') name,rating
+	FROM dbo.IPGTree A
+	LEFT OUTER JOIN SMART_CMS.dbo.SodPackage B
+	 ON A.packageCode = B.code
+	WHERE ipgKey = @ipgKey AND selfNodeID = @mainCtgrID
+
+	--하위 카테고리 리스트	
+	SELECT selfNodeID,nodeName,rating
+	FROM dbo.IPGTree
+	WHERE ipgKey = @ipgKey AND hiddenYN = 'Y' AND parentNodeID = @mainCtgrID AND startDate <= GETDATE() AND endDate >= GETDATE()
+	ORDER BY sort ASC
+
+	-- TOP 30개
+	SELECT TOP 30
+		@mainCtgrID mainCtgrID
+		,dbo.fn_TreeName(@ipgKey,@mainCtgrID) mainCtgrName
+	    ,A.selfNodeID subCtgrID
+	    ,B.nodeName subCtgrName
+	    ,dbo.fn_SeriesID (@ipgKey,A.contentID) seriesID
+	    ,A.contentID
+	    ,A.subTitle title
+	    ,posterFileUrl imageUrl
+	    ,CASE WHEN isOnlySD = 'Y' OR isOnlySD = '0' THEN '0' ELSE '1' END isHD
+	    ,CASE WHEN E.eventSeq IS NOT NULL THEN 'E'
+			WHEN isHot = 'Y' THEN 'H'
+			WHEN DATEDIFF(DAY,C.regDate,GETDATE()) <= 10 THEN 'N'
+			ELSE '0'
+	     END Icon
+	     ,C.rating
+		 -- 2013-10-13 윤찬영 -------------------------------------------
+		 , ISNULL(z.genreName, '') as genre
+		 , ISNULL(C.director, '') as directors
+		 , CEILING(CONVERT(FLOAT,C.playTime)/60) as runtime
+		 , ISNULL(C.loadActor, '') as actors
+		 , ISNULL(C.summary, '') as summary
+		 ----------------------------------------------------------------
+	FROM dbo.IPGTreeContent A
+	INNER JOIN dbo.IPGTree B
+		ON A.selfNodeID = B.selfNodeID AND B.ipgKey = @ipgKey
+	INNER JOIN dbo.ContentVOD C
+		ON A.contentID = C.contentID AND C.useYN = 'Y' AND C.ipgKey = @ipgKey
+    LEFT OUTER JOIN SMART_CMS.dbo.RecomEventInfo E
+	   ON A.contentID = E.vodCode AND E.useYN = 'Y' AND E.vodType = 'C' AND E.startDate <= GETDATE() AND E.endDate >= GETDATE() 
+	-- 2013-10-13 윤찬영 -------------------------------------------------------------
+	LEFT OUTER JOIN SMART_CMS.dbo.RecomGenreInfo z with (nolock) ON C.genreSeq = z.genreSeq
+	----------------------------------------------------------------------------------
+	WHERE A.ipgKey = @ipgKey AND contentType = 'C' AND hiddenYN = 'Y' AND parentNodeID = @mainCtgrID 
+		AND B.startDate <= GETDATE() AND B.endDate >= GETDATE()
+		AND (case a.contentType when 'C' --단편컨텐츠일때
+			                        then (case when exists(select productID from SMART_CMS.dbo.contentVODPriceInfo cp
+			                                        where cp.contentID = a.contentID
+												    and cp.efctStartDate <= current_timestamp 
+													and cp.efctEndDate >= current_timestamp) -- 가격이 있는지 체크
+										then 'Y' else 'N' end)
+                                    when 'S' --시리즈일때
+									then (case when exists(select productID from SMART_CMS.dbo.SeriesPriceInfo sp
+												    where sp.seriesID = a.contentID
+													and sp.efctStartDate <= current_timestamp 
+													and sp.efctEndDate >= current_timestamp) -- 가격이 있는지 체크
+										then 'Y' else 'N' end)
+									else 'N' 
+							   end)	= 'Y'
+	ORDER BY A.regDate DESC
+	
+
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_RecentList_v1]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+/*
+	작성일 : 2013년 11월 01일  
+	작성자 : 김병희 
+	기  능 : 브랜드관 상세 정보 Main(Recent)   
+	실  행 : EXECUTE dbo.usp_Brand_RecentList_v1 1
+	변경이력 : dbo.usp_Brand_RecentList 참고
+	          [2013-11-01,김병희]웹프로그램에서 바로 사용가능하도록 컬럼에 별칭설정
+
+
+	select * from dbo.ipginfo where serviceYn = 'Y' AND delYn = 'N';
+*/
+CREATE PROCEDURE [dbo].[usp_Brand_RecentList_v1] 
+	@mainCtgrID BIGINT
+AS  
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+	-- 사용중인 IPGKEY 가져오기
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_Select());
+
+	--카테고리별 월정액 정보		
+	--SELECT ISNULL(packageCode,'') packageCode,ISNULL(name,'') name,rating
+	SELECT case when (B.code is null) then '' else ISNULL(packageCode,'') end packageCode,ISNULL(name,'') name,rating
+	FROM dbo.IPGTree A --#.IPG트리정보
+	LEFT OUTER JOIN SMART_CMS.dbo.SodPackage B --#.패키지정보
+	ON A.packageCode = B.code
+	WHERE ipgKey = @ipgKey AND selfNodeID = @mainCtgrID
+
+	--하위 카테고리 리스트
+	--#.hiddenYN - Y가 노출임.	
+	SELECT selfNodeID as ctgrID,nodeName as ctgrName,rating as subCtgrRating
+	FROM dbo.IPGTree --#.IPG트리정보
+	WHERE ipgKey = @ipgKey AND hiddenYN = 'Y' AND parentNodeID = @mainCtgrID AND startDate <= GETDATE() AND endDate >= GETDATE()
+	ORDER BY sort ASC
+
+	DECLARE @MAINCTGRNAME	VARCHAR(50);	
+	SELECT  @MAINCTGRNAME = NODENAME FROM IPGTREE WHERE SELFNODEID = @MAINCTGRID AND IPGKEY = @IPGKEY;
+
+	-- TOP 30개:: 컨텐츠만 대상임.
+	select top 30
+		 @MAINCTGRID as mainCtgrID
+		,@MAINCTGRNAME as mainCtgrName
+	    ,TBL.SELFNODEID as subCtgrID
+	    ,NODENAME as subCtgrName
+	    ,case when CONTENTTYPE = 's' then contentID else '' end as seriesID
+	    ,contentID
+	    ,subTitle as title
+	    ,posterFileUrl as imageUrl
+	    ,isHD = (CASE WHEN isOnlySD = 'Y' OR isOnlySD = '0' THEN '0' ELSE '1' END)
+	    ,Icon = (CASE WHEN E.eventSeq IS NOT NULL THEN 'E'
+					  WHEN isHot = 'Y' THEN 'H'
+					  WHEN DATEDIFF(DAY, TBL.REGDATE1,GETDATE()) <= 10 THEN 'N'
+					  ELSE '0'
+				 END)
+	     ,rating
+		 -- 2013-10-13 윤찬영 -------------------------------------------
+		 ,ISNULL(y.genreName, '') as genre
+		 ,ISNULL(director, '') as directors
+		 ,CEILING(CONVERT(FLOAT,playTime)/60) as runtime
+		 ,ISNULL(loadActor, '') as actors
+		 ,ISNULL(summary, '') as summary
+	FROM 
+		(
+			SELECT A.REGDATE, A.CONTENTTYPE, B.ISHOT, A.SUBTITLE, A.CONTENTID, B.POSTERFILEURL, B.RATING, B.ISONLYSD, B.REGDATE AS REGDATE1, B.GENRESEQ
+								,B.DIRECTOR, B.PLAYTIME, B.LOADACTOR, B.SUMMARY, A.SELFNODEID, A.IPGKEY, F.NODENAME
+			FROM DBO.IPGTREE F --#.IPG트리정보
+			INNER JOIN DBO.IPGTREECONTENT A --#.IPG트리컨텐츠정보
+				ON F.SELFNODEID = A.SELFNODEID AND F.IPGKEY = A.IPGKEY AND F.IPGKEY = @IPGKEY
+			INNER JOIN DBO.CONTENTVOD B --#.컨텐츠VOD정보
+				ON A.CONTENTID= B.CONTENTID AND A.IPGKEY = B.IPGKEY 
+			INNER JOIN CONTENTVODPRICEINFO H --# VOD가격정보
+				ON A.CONTENTID = H.CONTENTID AND A.IPGKEY = H.IPGKEY
+			WHERE A.USEYN = 'Y'
+				AND GETDATE() BETWEEN H.EFCTSTARTDATE AND H.EFCTENDDATE
+				AND F.PARENTNODEID = @MAINCTGRID
+
+			UNION
+
+			SELECT A.REGDATE, A.CONTENTTYPE, NULL AS ISHOT, A.SUBTITLE, A.CONTENTID, B.POSTERFILEURL, B.RATING, NULL AS ISONLYSD, B.REGDATE AS REGDATE1, B.GENRESEQ
+								,B.DIRECTOR, NULL AS PLAYTIME, B.LOADACTOR, B.SUMMARY, A.SELFNODEID, A.IPGKEY, F.NODENAME
+			FROM DBO.IPGTREE F --#.IPG트리정보
+			INNER JOIN DBO.IPGTREECONTENT A --#.IPG트리컨텐츠정보
+				ON F.SELFNODEID = A.SELFNODEID AND F.IPGKEY = A.IPGKEY AND F.IPGKEY = @IPGKEY
+			INNER JOIN DBO.SERIES B --#.시리즈정보
+				ON A.CONTENTID= B.SERIESID AND A.IPGKEY = B.IPGKEY 
+			INNER JOIN SERIESPRICEINFO H --# 시리즈가격정보
+				ON A.CONTENTID = H.SERIESID AND A.IPGKEY = H.IPGKEY
+			WHERE A.USEYN = 'Y'
+				AND GETDATE() BETWEEN H.EFCTSTARTDATE AND H.EFCTENDDATE
+				AND F.PARENTNODEID = @MAINCTGRID
+		) TBL
+		LEFT OUTER JOIN SMART_CMS.DBO.RECOMGENREINFO Y --#.추천장르정보
+			ON TBL.GENRESEQ = Y.GENRESEQ
+		LEFT OUTER JOIN SMART_CMS.DBO.RECOMEVENTINFO E --#.추천이벤트정보
+				ON TBL.CONTENTID = E.VODCODE AND E.STARTDATE <= GETDATE() AND E.ENDDATE >= GETDATE()
+		ORDER BY TBL.regDate DESC
+	
+
+
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_RecentList_v1_0916]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+/*
+	작성일 : 2013년 11월 01일  
+	작성자 : 김병희 
+	기  능 : 브랜드관 상세 정보 Main(Recent)   
+	실  행 : EXECUTE dbo.usp_Brand_RecentList_v1 1
+	변경이력 : dbo.usp_Brand_RecentList 참고
+	          [2013-11-01,김병희]웹프로그램에서 바로 사용가능하도록 컬럼에 별칭설정
+
+
+	select * from dbo.ipginfo where serviceYn = 'Y' AND delYn = 'N';
+*/
+CREATE PROCEDURE [dbo].[usp_Brand_RecentList_v1_0916] 
+	@mainCtgrID BIGINT
+AS  
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+	-- 사용중인 IPGKEY 가져오기
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_Select());
+
+	--카테고리별 월정액 정보		
+	--SELECT ISNULL(packageCode,'') packageCode,ISNULL(name,'') name,rating
+	SELECT case when (B.code is null) then '' else ISNULL(packageCode,'') end packageCode,ISNULL(name,'') name,rating
+	FROM dbo.IPGTree A --#.IPG트리정보
+	LEFT OUTER JOIN SMART_CMS.dbo.SodPackage B --#.패키지정보
+	ON A.packageCode = B.code
+	WHERE ipgKey = @ipgKey AND selfNodeID = @mainCtgrID
+
+	--하위 카테고리 리스트
+	--#.hiddenYN - Y가 노출임.	
+	SELECT selfNodeID as ctgrID,nodeName as ctgrName,rating as subCtgrRating
+	FROM dbo.IPGTree --#.IPG트리정보
+	WHERE ipgKey = @ipgKey AND hiddenYN = 'Y' AND parentNodeID = @mainCtgrID AND startDate <= GETDATE() AND endDate >= GETDATE()
+	ORDER BY sort ASC
+
+	-- TOP 30개:: 컨텐츠만 대상임.
+	SELECT TOP 30
+		parentNodeID as mainCtgrID
+		,dbo.fn_TreeName(@ipgKey,@mainCtgrID) as mainCtgrName
+	    ,A.selfNodeID as subCtgrID
+	    ,B.nodeName as subCtgrName
+	    ,dbo.fn_SeriesID (@ipgKey,A.contentID) as seriesID
+	    ,A.contentID
+	    ,A.subTitle as title
+	    ,posterFileUrl as imageUrl
+	    ,isHD = (CASE WHEN isOnlySD = 'Y' OR isOnlySD = '0' THEN '0' ELSE '1' END)
+	    ,Icon = (CASE WHEN E.eventSeq IS NOT NULL THEN 'E'
+					  WHEN isHot = 'Y' THEN 'H'
+					  WHEN DATEDIFF(DAY,C.regDate,GETDATE()) <= 10 THEN 'N'
+					  ELSE '0'
+				 END)
+	     ,C.rating
+		 -- 2013-10-13 윤찬영 -------------------------------------------
+		 ,ISNULL(z.genreName, '') as genre
+		 ,ISNULL(C.director, '') as directors
+		 ,CEILING(CONVERT(FLOAT,C.playTime)/60) as runtime
+		 ,ISNULL(C.loadActor, '') as actors
+		 ,ISNULL(C.summary, '') as summary
+		 ----------------------------------------------------------------
+	FROM dbo.IPGTreeContent A --#.IPG트리컨텐츠정보
+	INNER JOIN dbo.IPGTree B --#.IPG트리정보
+	ON a.ipgKey = b.ipgKey and A.selfNodeID = B.selfNodeID 
+	INNER JOIN dbo.ContentVOD C --#.컨텐츠VOD정보
+	ON a.ipgKey = c.ipgKey and A.contentID = C.contentID AND C.useYN = 'Y'
+    --#.[2013-11-01,김병희]인덱스를 강제로 실행계획에 설정
+    LEFT OUTER JOIN SMART_CMS.dbo.RecomEventInfo E --#.추천이벤트정보 --with(index(ix_RecomEventInfo_vodCode))
+	ON A.contentID = E.vodCode AND E.useYN = 'Y' AND E.vodType = 'C' AND E.startDate <= GETDATE() AND E.endDate >= GETDATE() 
+	-- 2013-10-13 윤찬영 -------------------------------------------------------------
+	LEFT OUTER JOIN SMART_CMS.dbo.RecomGenreInfo z --#.추천장르정보
+	ON C.genreSeq = z.genreSeq
+	----------------------------------------------------------------------------------
+	--2014-02-20 최광섭 추가
+	LEFT OUTER JOIN contentVODPriceInfo F --# VOD가격정보
+		ON A.contentID = F.contentID AND F.ipgKey = @ipgKey and A.contentType  = 'C' 
+	LEFT OUTER JOIN SeriesPriceInfo G --# 시리즈가격정보
+		ON A.contentID = G.seriesID AND G.ipgKey = @ipgKey and A.contentType  = 'S' 
+	--2014-02-20 최광섭 추가
+	WHERE A.ipgKey = @ipgKey AND contentType = 'C' AND hiddenYN = 'Y' AND parentNodeID = @mainCtgrID 
+		AND B.startDate <= GETDATE() AND B.endDate >= GETDATE()
+		--#.[2013-11-18, 김병희, 요금이 설정되어 있는 컨텐츠, 시리즈 조건추가]
+		AND dbo.fn_ContentSeriesPriceYN_Select (a.contentType,a.contentID) = 'Y'
+		--2014-02-20 최광섭 추가
+		  AND 0 < case when F.contentID is not null AND F.efctEndDate >= getdate() AND F.efctStartDate < getdate() then 1
+		  			   when G.seriesID is not null AND G.efctEndDate >= getdate()  AND G.efctStartDate < getdate()  then 1
+					   when F.contentID is null and G.seriesID is null then 0
+					   else 0 end
+		 --2014-02-20 최광섭 추가
+
+	ORDER BY A.regDate DESC
+	
+
+
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_RecentList_v1_Smart]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+
+/*
+	작성일 : 2014년 11월 05일  
+	작성자 : 유선모
+	기  능 : 각 카테고리 별 상세 정보 Main(Recent)   
+	실  행 : EXECUTE dbo.usp_Brand_RecentList_v1_Smart 534, 1, 10, 'M021111,M011111,M001111'
+	변경이력 : dbo.usp_Brand_RecentList 참고
+
+
+	select * from dbo.ipginfo where serviceYn = 'Y' AND delYn = 'N';
+*/
+CREATE PROCEDURE [dbo].[usp_Brand_RecentList_v1_Smart] 
+	@mainCtgrID BIGINT
+	,@iStarNo int = 0
+	,@iEndNo int = 0
+	,@ChrgPrdtCd VARCHAR(100) =''
+	,@cuaRating int = 1
+	,@isTest		char(1) = '1'
+AS  
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+	-- 사용중인 IPGKEY 가져오기
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_SmartSelect(@isTest));
+
+	--카테고리별 월정액 정보		
+	SELECT case when (B.code is null) then '' else ISNULL(packageCode,'') end packageCode,ISNULL(name,'') name,rating
+	FROM dbo.IPGTreeSmart A --#.IPG트리정보
+	LEFT OUTER JOIN SMART_CMS.dbo.SodPackage B --#.패키지정보
+	ON A.packageCode = B.code
+	WHERE ipgKey = @ipgKey AND selfNodeID = @mainCtgrID
+
+	--하위 카테고리 리스트
+	--#.hiddenYN - Y가 노출임.	
+
+	-- 현 카테고리의 하위 카테고리 총갯수 출력
+	SELECT count(*) as [Count]
+	FROM dbo.IPGTreeSmart a --#.IPG트리정보
+	WHERE a.ipgKey = @ipgKey AND hiddenYN = 'Y' AND parentNodeID = @mainCtgrID AND startDate <= GETDATE() AND endDate >= GETDATE()
+
+	--구매여부 확인
+
+	DECLARE @buyType CHAR(1) = 'N';
+
+	--메인카테고리의 하위에 있는 카테고리 목록 가져오기
+select 
+	a.NO
+	,a.ctgrID
+	,a.ctgrName
+	,a.subCtgrRating
+	,a.hasChild
+	--,a.Price
+	--,a.PackPrice
+	,case 
+		when isnull(a.ipgImgUrl,'') = '' 
+			then 
+				case a.hasChild 
+					when 'Y' then 'noPoster'
+					else
+						(select top 1 
+							case 
+								when rating > @cuaRating then 'noPoster'
+								when rating = 1 then posterFileUrl
+								else posterFileUrl 
+							end
+						from ipgtreecontentsmart aa inner join contentvod bb on aa.contentid = bb.contentid 
+						where aa.ipgkey = @ipgkey and selfnodeid = a.ctgrID)
+				end
+		else a.ipgImgUrl
+	end ipgImgUrl
+from (
+	SELECT row_number() over( order by sort asc) as NO, a.selfNodeID as ctgrID,nodeName as ctgrName,rating as subCtgrRating
+
+	--카테고리에 등록된 이미지 가져오는데 null이면 매핑되어 있는 컨텐츠들 중에 최근 업데이트 된 포스터 이미지 가져온다.
+	--가져온 포스터 이미지에 연령제한으로 걸린다면 cms에서 관리하는 제작 이미지 노출
+	, case when exists(select parentnodeid from ipgtreesmart where parentnodeid = a.selfnodeid) then 'Y' 
+	else 'N' end hasChild
+	,ipgImgUrl
+	, dbo.fn_PurchaseBuyYn (a.selfNodeID, '', '', '', @ChrgPrdtCd) AS BUYTYPE
+	FROM dbo.IPGTreeSmart a --#.IPG트리정보
+
+	WHERE a.ipgKey = @ipgKey AND hiddenYN = 'Y' AND parentNodeID = @mainCtgrID AND startDate <= GETDATE() AND endDate >= GETDATE()
+
+	) a
+	WHERE NO BETWEEN @iStarNo AND @iEndNo;
+
+	select dbo.fn_PurchaseBuyYn(@mainCtgrID, '', '', '', @ChrgPrdtCd) as packBuyType
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_RecomList]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+/*
+	작성일 : 2013년 08월 05일  
+	작성자 : 정수미 
+	기  능 : VOD 브랜드 GATE 카테고리별 TOP 7 추천 리스트    
+	실  행 : EXECUTE dbo.usp_Brand_RecomList 395
+	변경이력 :
+*/
+CREATE PROCEDURE [dbo].[usp_Brand_RecomList] 
+	@categorySeq BIGINT
+AS  
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+	-- 사용중인 IPGKEY 가져오기
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_Select());
+	--SELECT @ipgKey = ipgKey
+	--FROM dbo.IPGInfo --#.IPG정보
+	--WHERE serviceYn = 'Y' AND delYn = 'N';
+	
+
+	SELECT TOP 7 
+	      A.sortOrder as sortOrder
+		, A.vodType as contentType
+	    , A.mainCategory mainCtgrID
+	    ,dbo.fn_TreeName(@ipgKey,A.mainCategory) mainCtgrName
+	    ,A.subCategory subCtgrID
+	    ,dbo.fn_TreeName(@ipgKey,A.subCategory) subCtgrName
+	    ,RTRIM(A.seriesID) seriesID
+		,A.contentID
+		,ISNULL(C.subTitle,D.nodeName) title
+		,A.fileName
+	    ,A.filePath
+	    ,posterFileUrl AS imageUrl
+	    ,CASE WHEN isOnlySD = 'Y' OR isOnlySD = '0' THEN '0' ELSE '1' END AS isHD
+	    ,CASE WHEN E.eventSeq IS NOT NULL THEN 'E'
+			WHEN isHot = 'Y' THEN 'H'
+			WHEN DATEDIFF(DAY,B.regDate,GETDATE()) <= 10 THEN 'N'
+			ELSE '0' 
+	     END Icon
+	     ,B.rating
+		 -- 2013-10-13 윤찬영 -------------------------------------
+		 , ISNULL(z.genreName, '') as genre
+		 , ISNULL(B.director, '') as directors
+		 , CEILING(CONVERT(FLOAT,B.playTime)/60) as runtime
+		 , ISNULL(B.loadActor, '') as actors
+		 , ISNULL(B.summary, '') as summary
+		 ----------------------------------------------------------
+	FROM SMART_CMS.dbo.RecomCategoryVODInfo A --#.추천카테고리VOD정보
+	LEFT OUTER JOIN dbo.ContentVOD B --#.컨텐츠VOD정보
+		ON A.contentID = B.contentID AND B.ipgKey = @ipgKey
+	INNER JOIN dbo.IPGTreeContent C --#.IPG트리컨텐츠정보[2013-11-18, 김병희, 반드시 있어야 하므로 INNER JOIN으로 변경함]
+	--LEFT OUTER JOIN dbo.IPGTreeContent C
+		ON A.contentID = C.contentID 
+			AND A.subCategory = C.selfNodeID AND A.vodType = C.contentType
+			AND C.ipgKey = @ipgKey AND C.useYN = 'Y'
+	LEFT OUTER JOIN dbo.IPGTree D --#.IPG트리정보
+		ON A.subCategory = D.selfNodeID AND A.vodType = 'I'
+    LEFT OUTER JOIN SMART_CMS.dbo.RecomEventInfo E --#.추천이벤트정보
+	   ON A.contentID = E.vodCode and E.vodType = 'C'
+	-- 2013-10-13 윤찬영 ------------------------------------------------------------
+	LEFT OUTER JOIN SMART_CMS.dbo.RecomGenreInfo z --#.추천장르정보
+		ON B.genreSeq = z.genreSeq
+	---------------------------------------------------------------------------------
+	--2014-02-20 최광섭 추가
+	LEFT OUTER JOIN contentVODPriceInfo F --# VOD가격정보
+		ON C.contentID = F.contentID AND F.ipgKey = @ipgKey and C.contentType  = 'C' 
+	LEFT OUTER JOIN SeriesPriceInfo G --# 시리즈가격정보
+		ON C.contentID = G.seriesID AND G.ipgKey = @ipgKey and C.contentType  = 'S' 
+	--2014-02-20 최광섭 추가
+
+	WHERE A.useYN = 'Y' AND viewYN = 'Y'
+		  AND A.startDate <= GETDATE() AND A.endDate >= GETDATE() AND categorySeq = @categorySeq
+		  --#.[2013-11-18, 김병희, 요금이 설정되어 있는 컨텐츠, 시리즈 조건추가]
+		  AND dbo.fn_ContentSeriesPriceYN_Select (c.contentType,a.contentID) = 'Y'
+		  --2014-02-20 최광섭 추가
+		  AND 0 < case when F.contentID is not null AND F.efctEndDate >= getdate() AND F.efctStartDate < getdate() then 1
+		  			   when G.seriesID is not null AND G.efctEndDate >= getdate() AND G.efctStartDate < getdate() then 1
+					   when F.contentID is null and G.seriesID is null then 0
+					   else 0 end
+		 --2014-02-20 최광섭 추가
+	ORDER BY sortOrder
+
+
+
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_RecomList_Smart]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+/*
+	작성일 : 2014년 11월 06일  
+	작성자 : 권혁진 
+	기  능 : VOD 브랜드 GATE 카테고리별 TOP 7 추천 리스트 스마트    
+	실  행 : EXECUTE dbo.usp_Brand_RecomList 395
+	변경이력 :
+*/
+create PROCEDURE [dbo].[usp_Brand_RecomList_Smart]
+	@categorySeq BIGINT
+	,@chrgPrdtCd VARCHAR(100) = ''
+	
+AS
+BEGIN
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+	-- 사용중인 IPGKEY 가져오기
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_Select());
+	--SELECT @ipgKey = ipgKey
+	--FROM dbo.IPGInfo --#.IPG정보
+	--WHERE serviceYn = 'Y' AND delYn = 'N';
+	
+
+	SELECT TOP 7 
+	      A.sortOrder as sortOrder
+		, A.vodType as contentType
+	    , A.mainCategory mainCtgrID
+	    ,dbo.fn_TreeName(@ipgKey,A.mainCategory) mainCtgrName
+	    ,A.subCategory subCtgrID
+	    ,dbo.fn_TreeName(@ipgKey,A.subCategory) subCtgrName
+	    ,RTRIM(A.seriesID) seriesID
+		,A.contentID
+		,ISNULL(C.subTitle,D.nodeName) title
+		,A.fileName
+	    ,A.filePath
+	    ,posterFileUrl AS imageUrl
+	    ,CASE WHEN isOnlySD = 'Y' OR isOnlySD = '0' THEN '0' ELSE '1' END AS isHD
+	    ,CASE WHEN E.eventSeq IS NOT NULL THEN 'E'
+			WHEN isHot = 'Y' THEN 'H'
+			WHEN DATEDIFF(DAY,B.regDate,GETDATE()) <= 10 THEN 'N'
+			ELSE '0' 
+	     END Icon
+	     ,B.rating
+		 -- 2013-10-13 윤찬영 -------------------------------------
+		 , ISNULL(z.genreName, '') as genre
+		 , ISNULL(B.director, '') as directors
+		 , CEILING(CONVERT(FLOAT,B.playTime)/60) as runtime
+		 , ISNULL(B.loadActor, '') as actors
+		 , ISNULL(B.summary, '') as summary
+		 ----------------------------------------------------------
+		 -- 2014-11-06 권혁진 가격 정책에 따른 수정 필요 ------------
+		 ,dbo.fn_IpgTreeContentPrice(A.selfNodeID, A.vodType, @chrgPrdtCd , A.contentID) AS contentPrice
+		 ----------------------------------------------------------
+	FROM SMART_CMS.dbo.RecomCategoryVODInfo A --#.추천카테고리VOD정보
+	LEFT OUTER JOIN dbo.ContentVOD B --#.컨텐츠VOD정보
+		ON A.contentID = B.contentID AND B.ipgKey = @ipgKey
+	INNER JOIN dbo.IPGTreeContentSmart C --#.IPG트리컨텐츠정보[2013-11-18, 김병희, 반드시 있어야 하므로 INNER JOIN으로 변경함]
+	--LEFT OUTER JOIN dbo.IPGTreeContentSmart C
+		ON A.contentID = C.contentID 
+			AND A.selfNodeID = C.selfNodeID AND A.vodType = C.contentType
+			AND C.ipgKey = @ipgKey AND C.useYN = 'Y'
+	LEFT OUTER JOIN dbo.IPGTreeSmart D --#.IPG트리정보
+		ON A.subCategory = D.selfNodeID AND A.vodType = 'I'
+    LEFT OUTER JOIN SMART_CMS.dbo.RecomEventInfo E --#.추천이벤트정보
+	   ON A.contentID = E.vodCode and E.vodType = 'C'
+	-- 2013-10-13 윤찬영 ------------------------------------------------------------
+	LEFT OUTER JOIN SMART_CMS.dbo.RecomGenreInfo z --#.추천장르정보
+		ON B.genreSeq = z.genreSeq
+	---------------------------------------------------------------------------------
+	--2014-02-20 최광섭 추가
+	LEFT OUTER JOIN contentVODPriceInfo F --# VOD가격정보
+		ON C.contentID = F.contentID AND F.ipgKey = @ipgKey and C.contentType  = 'C' 
+	LEFT OUTER JOIN SeriesPriceInfo G --# 시리즈가격정보
+		ON C.contentID = G.seriesID AND G.ipgKey = @ipgKey and C.contentType  = 'S' 
+	--2014-02-20 최광섭 추가
+
+	WHERE A.useYN = 'Y' AND viewYN = 'Y'
+		  AND A.startDate <= GETDATE() AND A.endDate >= GETDATE() AND categorySeq = @categorySeq
+		  --#.[2013-11-18, 김병희, 요금이 설정되어 있는 컨텐츠, 시리즈 조건추가]
+		  AND dbo.fn_ContentSeriesPriceYN_Select (c.contentType,a.contentID) = 'Y'
+		  --2014-02-20 최광섭 추가
+		  AND 0 < case when F.contentID is not null AND F.efctEndDate >= getdate() AND F.efctStartDate < getdate() then 1
+		  			   when G.seriesID is not null AND G.efctEndDate >= getdate() AND G.efctStartDate < getdate() then 1
+					   when F.contentID is null and G.seriesID is null then 0
+					   else 0 end
+		 --2014-02-20 최광섭 추가
+	ORDER BY sortOrder
+
+END
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_RecomPageList]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+/*
+	작성일 : 2013년 08월 05일  
+	작성자 : 정수미 
+	기  능 : VOD 브랜드 GATE 카테고리별 추천 리스트    
+	실  행 :
+	 EXECUTE dbo.usp_Brand_RecomPageList 1,100,0
+	변경이력 :
+
+	select top 1 * from SMART_CMS.dbo.RecomCategoryVODInfo
+*/
+CREATE PROCEDURE [dbo].[usp_Brand_RecomPageList] 
+ 	 @startno	INT = 0
+	,@endno		INT = 0
+	,@categorySeq BIGINT
+	,@orderBy CHAR(1) = '1'
+AS  
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+	-- 사용중인 IPGKEY 가져오기
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_Select());
+		
+	WITH TBL
+	AS
+	(
+		SELECT COUNT(*) OVER() AS MAXCNT
+			,row_number() OVER(
+			ORDER BY (CASE WHEN @orderBy = '1' THEN a.updateDate END) desc,
+				        (CASE WHEN @orderBy = '2' THEN isHot END) DESC,
+  						(CASE WHEN @orderBy = '3' THEN subTitle END) ASC,	
+  						(CASE WHEN @orderBy = '' THEN A.sortOrder END) ASC 
+					) AS NO
+			, recomSeq,categorySeq,A.vodType contentType
+			, A.contentID,A.seriesID,posterFileUrl
+			, A.mainCategory mainCtgrID
+			, isnull(z.nodeName, '') as mainCtgrName -- 2013-10-12 윤찬영
+			, A.subCategory subCtgrID
+			, isnull(x.nodeName, '') as subCtgrName  -- 2013-10-12 윤찬영
+			, subTitle AS title 
+			,CASE WHEN isOnlySD = 'Y' OR isOnlySD = '0' THEN '0' ELSE '1' END IsHD
+			,CASE WHEN E.eventSeq IS NOT NULL THEN 'E'
+				WHEN isHot = 'Y' THEN 'H'
+				WHEN DATEDIFF(DAY,B.regDate,GETDATE()) <= 10 THEN 'N'
+				ELSE '0'
+				END Icon
+			,B.rating
+			-- 2013-10-13 윤찬영 -----------------------------------
+			, ISNULL(y.genreName, '') as genre
+			, ISNULL(B.director, '') as directors
+			, CEILING(CONVERT(FLOAT, B.playTime)/60) as runtime
+			, ISNULL(B.loadActor, '') as actors
+			, ISNULL(B.summary, '') as summary
+			--------------------------------------------------------
+		FROM SMART_CMS.dbo.RecomCategoryVODInfo A --#.추천카테고리VOD정보
+		INNER JOIN dbo.ContentVOD B --#.컨텐츠VOD정보
+			ON A.contentID = B.contentID
+		INNER JOIN dbo.IPGTreeContent C --#.IPG트리컨텐츠정보
+			ON A.contentID = C.contentID 
+			AND A.subCategory = C.selfNodeID AND A.vodType = C.contentType
+			AND C.ipgKey = @ipgKey AND C.useYN = 'Y'
+		--2014-02-20 최광섭 추가
+		LEFT OUTER JOIN contentVODPriceInfo F --# VOD가격정보
+			ON C.contentID = F.contentID AND F.ipgKey = @ipgKey and C.contentType  = 'C' 
+		LEFT OUTER JOIN SeriesPriceInfo G --# 시리즈가격정보
+			ON C.contentID = G.seriesID AND G.ipgKey = @ipgKey and C.contentType  = 'S' 
+		--2014-02-20 최광섭 추가
+		-- 2013-10-12 윤찬영 -----------------------------------------------
+		INNER JOIN dbo.IPGTree z ON A.mainCategory = z.selfNodeID --#.IPG트리정보
+			AND z.ipgKey = @ipgKey
+		INNER JOIN dbo.IPGTree x ON A.subCategory = x.selfNodeID --#.IPG트리정보
+			AND x.ipgKey = @ipgKey
+			AND x.parentNodeID = A.mainCategory
+		-- 2013-10-13 윤찬영 -----------------------------------------------
+		INNER JOIN SMART_CMS.dbo.RecomGenreInfo y ON B.genreSeq = y.genreSeq --#.추천장르정보
+		--------------------------------------------------------------------
+		LEFT OUTER JOIN SMART_CMS.dbo.RecomEventInfo E --#.추천이벤트정보
+			ON A.contentID = E.vodCode and E.vodType = 'C' AND E.startDate <= GETDATE() AND E.endDate >= GETDATE()
+		WHERE B.ipgKey = @ipgKey AND A.useYN = 'Y' 
+		AND A.vodType in ('S','C')
+		AND A.startDate <= GETDATE() AND A.endDate >= GETDATE() AND categorySeq = @categorySeq
+		--#.[2013-11-18, 김병희, 요금이 설정되어 있는 컨텐츠, 시리즈 조건추가]
+		AND dbo.fn_ContentSeriesPriceYN_Select (c.contentType,a.contentID) = 'Y'
+		--2014-02-20 최광섭 추가
+		AND 0 < case when F.contentID is not null AND F.efctEndDate >= getdate()  AND F.efctStartDate < getdate() then 1
+		  			when G.seriesID is not null AND G.efctEndDate >= getdate() AND G.efctStartDate < getdate()  then 1
+					when F.contentID is null and G.seriesID is null then 0
+					else 0 end
+		--2014-02-20 최광섭 추가
+	)
+		
+	SELECT * FROM TBL WHERE NO BETWEEN @startno AND @endno;
+
+
+
+
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_RecomPageList_Smart]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+/*
+	작성일 : 2014년 11월 10일  
+	작성자 : 유선모 
+	기  능 : 
+	실  행 :
+	 EXECUTE dbo.usp_Brand_RecomPageList_Smart 1,100,0, 1,''
+	변경이력 :
+
+	select top 1 * from SMART_CMS.dbo.RecomCategoryVODInfo
+*/
+CREATE PROCEDURE [dbo].[usp_Brand_RecomPageList_Smart] 
+ 	 @startno	INT = 0
+	,@endno		INT = 0
+	,@categorySeq BIGINT
+	,@orderBy CHAR(1) = '1'
+	,@ChrgPrdtCd VARCHAR(100) = ''
+	--,@contractID VARCHAR(20)
+	,@isTest	char(1) = '1'
+AS  
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+	-- 사용중인 IPGKEY 가져오기
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_SmartSelect(@isTest));
+
+	--추천 VOD 리스트
+	;WITH TBL
+	AS
+	(
+		SELECT COUNT(*) OVER() AS MAXCNT
+			,row_number() OVER(
+			ORDER BY (CASE WHEN @orderBy = '1' THEN a.updateDate END) desc,
+  						(CASE WHEN @orderBy = '2' THEN subTitle END) ASC,	
+  						(CASE WHEN @orderBy = '' THEN A.sortOrder END) ASC 
+					) AS NO
+			, recomSeq,categorySeq,A.vodType contentType
+			, A.contentID,A.seriesID,case when (A.vodType = 'C') then B.posterFileUrl else S.posterFileUrl end posterFileUrl
+			, A.mainCategory mainCtgrID
+			, isnull(z.nodeName, '') as mainCtgrName -- 2013-10-12 윤찬영
+			, A.subCategory subCtgrID
+			, isnull(x.nodeName, '') as subCtgrName  -- 2013-10-12 윤찬영
+			, subTitle AS title 
+			,CASE WHEN isOnlySD = 'Y' OR isOnlySD = '0' THEN '0' ELSE '1' END IsHD
+			,CASE WHEN  e.eventSeq IS NOT NULL THEN 'E'
+				WHEN isHot = 'Y' THEN 'H'
+				WHEN DATEDIFF(DAY,B.regDate,GETDATE()) <= 10 THEN 'N'
+				ELSE '0'
+				END Icon
+			,B.rating
+			-- 2013-10-13 윤찬영 -----------------------------------
+			, ISNULL(y.genreName, '') as genre
+			, ISNULL(B.director, '') as directors
+			, CEILING(CONVERT(FLOAT, B.playTime)/60) as runtime
+			, ISNULL(B.loadActor, '') as actors
+			, ISNULL(B.summary, '') as summary
+			--------------------------------------------------------
+			, a.subCategory as selfNodeID --AND A.selfNodeID  현재 운용관리 소스가 예전꺼 이므로 selfNodeID에는 null이 들어가 있음 나중에 상용적용 후 이 주석 적용
+		FROM SMART_CMS.dbo.RecomCategoryVODInfo A --#.추천카테고리VOD정보
+		LEFT JOIN dbo.ContentVOD B --#.컨텐츠VOD정보
+			ON A.contentID = B.contentID AND B.ipgKey = @ipgKey 
+		LEFT JOIN dbo.Series S --#.시리즈정보
+			ON A.seriesID = S.seriesID AND S.ipgKey = @ipgKey 
+		INNER JOIN dbo.IPGTreeContentSmart C --#.IPG트리컨텐츠정보
+			ON A.contentID = C.contentID 
+			AND A.subCategory = C.selfNodeID --AND A.selfNodeID = C.selfNodeID  현재 운용관리 소스가 예전꺼 이므로 selfNodeID에는 null이 들어가 있음 나중에 상용적용 후 이 주석 적용		
+			AND A.vodType = C.contentType
+			AND C.ipgKey = @ipgKey AND C.useYN = 'Y'
+		--2014-02-20 최광섭 추가
+		LEFT JOIN contentVODPriceInfo F --# VOD가격정보
+			ON C.contentID = F.contentID AND F.ipgKey = @ipgKey and C.contentType  = 'C'
+			AND F.EFCTSTARTDATE < GETDATE() AND F.EFCTENDDATE >= GETDATE()
+		LEFT JOIN SeriesPriceInfo G --# 시리즈가격정보
+			ON C.contentID = G.seriesID AND G.ipgKey = @ipgKey and C.contentType  = 'S' 
+			AND G.EFCTSTARTDATE < GETDATE() AND G.EFCTENDDATE >= GETDATE()
+		--2014-02-20 최광섭 추가
+		-- 2013-10-12 윤찬영 -----------------------------------------------
+		INNER JOIN dbo.IPGTreeSmart z ON A.mainCategory = z.selfNodeID --#.IPG트리정보
+			AND z.ipgKey = @ipgKey
+		INNER JOIN dbo.IPGTreeSmart x ON A.subCategory = x.selfNodeID --#.IPG트리정보
+			AND x.ipgKey = @ipgKey
+		-- 2013-10-13 윤찬영 -----------------------------------------------
+		INNER JOIN SMART_CMS.dbo.RecomGenreInfo y ON y.genreSeq = case when (A.vodType = 'C') then B.genreSeq else S.genreSeq end --#.추천장르정보
+		--------------------------------------------------------------------
+		left join SMART_CMS.dbo.RecomEventInfo e with(nolock)	ON a.contentID = e.vodCode AND e.vodType = 'C' AND (e.startDate <= GETDATE() and e.endDate >= getdate())
+		----#.[2013-11-18, 김병희, 요금이 설정되어 있는 컨텐츠, 시리즈 조건추가]
+		WHERE 0 = 0
+		AND dbo.fn_ContentSeriesPriceYN_Select (c.contentType,a.contentID) = 'Y'
+		AND A.startDate <= GETDATE() AND A.endDate >= GETDATE() AND categorySeq = @categorySeq
+		--2014-02-20 최광섭 추가
+		AND 0 < case when F.contentID IS NOT NULL AND F.efctEndDate >= getdate()  AND F.efctStartDate < getdate() then 1
+		  			when G.seriesID IS NOT NULL AND G.efctEndDate >= getdate() AND G.efctStartDate < getdate()  then 1
+					when F.contentID is null and G.seriesID is null then 0
+					else 0 end
+		--2014-02-20 최광섭 추가
+
+		--가격과 월정액내 가격이 등록 되어있지 않아 null 이라면 컨텐츠를 노출 하지 않는다.
+		--and f.price is not null and g.price is not null
+		--and g.inpackprice is not null and f.inpackprice is not null
+	)
+		
+	SELECT *, dbo.fn_IpgTreeContentPrice (selfNodeID, contentType, @ChrgPrdtCd, case contentType when 'C' then contentID else seriesID end, @isTest)
+				 as contentPrice
+	FROM TBL WHERE NO BETWEEN @startno AND @endno;
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_SeriesDetail]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+/*
+	 작성일 : 2013년 08월 07일  
+	 작성자 : 정수미 
+	 기  능 : VOD 브랜드관 Series 상세정보     
+	 실  행 : exec dbo.usp_Brand_SeriesDetail 1,50,'S1310154022001','136358889410','','','2,2013015'		
+	 변경이력 :
+*/
+CREATE PROCEDURE [dbo].[usp_Brand_SeriesDetail] 
+ 	 @startno	INT = 0
+	,@endno		INT = 0
+ 	,@seriesID CHAR(14)
+    ,@SCID VARCHAR(20)
+    ,@lastNo CHAR(14) = ''
+    ,@mainCtgrID BIGINT = 0
+    ,@ChrgPrdtCd VARCHAR(100) =''
+	,@contractID VARCHAR(20)
+AS  
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+	
+	-- 사용중인 IPGKEY 가져오기
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_Select());
+
+	print '@ipgKey: '+str(@ipgKey)
+
+	DECLARE @CTABLE TABLE
+	(
+		codeString VARCHAR(12)
+	)
+	
+	INSERT INTO @CTABLE (codeString)
+	SELECT VALUE				   
+	FROM dbo.fn_Split_Tbl (@ChrgPrdtCd,',')
+	
+	DECLARE @prdtCd VARCHAR(7) = '';
+	DECLARE @prdtName NVARCHAR(50) = ''
+	--카테고리별 월정액 정보	
+	SELECT @prdtCd = packageCode,@prdtName = name
+	FROM dbo.IPGTree A --IPG트리정보
+	INNER JOIN SMART_CMS.dbo.SodPackage B --#.월정액상품정보
+		ON A.packageCode = B.code AND gubun = 'V'
+	WHERE ipgKey = @ipgKey AND selfNodeID = @mainCtgrID
+
+	--구매 여부 확인			
+	DECLARE @buyType CHAR(1) = 'N';
+	--월정액 구매여부
+	IF EXISTS ( 		
+		SELECT *
+		FROM @CTABLE A
+		INNER JOIN SMART_CMS.dbo.SodPackage C --#.월정액상품정보
+			ON A.codeString = C.code AND gubun = 'V'
+		INNER JOIN dbo.IPGTree B --IPG트리정보
+			ON B.packageCode = C.code
+		WHERE ipgKey = @ipgKey AND selfNodeID = @mainCtgrID
+	) BEGIN	
+		SET @buyType = 'P';		
+	  END	  
+	--시리즈 구매 여부
+	ELSE
+		BEGIN		
+			SELECT TOP 1 @buyType = purType
+			FROM SMART_CMS.dbo.Purchase --#.구매내역정보
+			WHERE seriesID = @seriesID 
+				  AND expireDate >= GETDATE() AND (isRefundment !=  'Y' OR isRefundment IS NULL)	
+				  AND legacyId = @contractID
+			ORDER BY purType DESC;
+		END
+	
+	--시리즈 상세 정보
+	  SELECT A.seriesID,title,rating
+		  ,CONVERT(nvarchar(30),startDate, 120) startDate
+		  ,CONVERT(nvarchar(30),endDate, 120) endDate,posterFileUrl,adminMemo
+		  ,buySeriesYN,summary,endYN,director,loadActor,notice,A.cpID,cpName,A.genreSeq,genreName
+		  ,contentType,seriseViewLength,ISNULL(price,0) seriesPrice
+		  ,@buyType buyYN
+		  ,@mainCtgrID mainCate
+		  ,@prdtCd prdtCd
+		  ,@prdtName prdtName
+	  FROM dbo.Series A --#.시리즈정보
+	  LEFT OUTER JOIN SMART_CMS.dbo.CPCode B --#.CP코드
+		ON A.cpID = B.cpID
+	  LEFT OUTER JOIN SMART_CMS.dbo.RecomGenreInfo C --#.추천장르정보
+		ON A.genreSeq = C.genreSeq
+	  LEFT OUTER JOIN dbo.SeriesPriceInfo D --#.시리즈가격정보
+		ON A.seriesID = D.seriesID AND D.ipgKey =@ipgKey AND D.efctStartDate <= GETDATE() AND D.efctEndDate>= GETDATE()
+	  WHERE A.ipgKey =@ipgKey AND A.useYN = 'Y' AND A.seriesID = @seriesID;
+
+	--시리즈 리스트	
+	WITH TBL
+	AS
+	(
+		SELECT COUNT(*) OVER() AS MAXCNT
+			, row_number() over(order by sort ASC) as no
+		    , A.contentID
+		    , subTitle
+		    , noOfSeries
+		    , CASE WHEN @buyType != 'N' THEN @buyType ELSE ISNULL(purType,'N') END buyYN
+		FROM dbo.SeriesContent A --#.시리즈컨텐츠정보
+	    LEFT OUTER JOIN SMART_CMS.dbo.Purchase I --#.구매내역정보
+		  ON A.contentID = I.contentID AND expireDate >= GETDATE() AND SCID = @SCID AND (isRefundment !=  'Y' OR isRefundment IS NULL)	 
+		WHERE A.ipgKey =@ipgKey AND useYN = 'Y' AND A.seriesID = @seriesID AND startDate <= GETDATE() AND endDate >= GETDATE()	 
+	)		
+	SELECT * FROM TBL WHERE NO BETWEEN @startno AND @endno;
+
+    --마지막으로 본 이후 다음 에피소드 contentID	
+	SELECT TOP 1 A.contentID
+	FROM dbo.SeriesContent A --#.시리즈컨텐츠정보
+	INNER JOIN (
+		SELECT seriesID,noOfSeries
+		FROM dbo.SeriesContent --#.시리즈컨텐츠정보
+		WHERE ipgKey =@ipgKey AND useYN = 'Y' AND seriesID = @seriesID AND contentID = @lastNo
+	)AS B
+		ON A.seriesID = B.seriesID
+	WHERE a.ipgKey =@ipgKey and a.useYN = 'Y' AND A.noOfSeries > B.noOfSeries
+	ORDER BY A.noOfSeries
+	
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_SeriesDetail_Smart]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+/*
+	 작성일 : 2014년 11월 10일  
+	 작성자 : 유선모 
+	 기  능 : VOD 브랜드관 Series 상세정보     
+	 실  행 : exec dbo.usp_Brand_SeriesDetail_Smart 1,50,'S1410214022002','136035539918','',1,'M001111,M021111','0005762120_1',538
+	 변경이력 :
+*/
+CREATE PROCEDURE [dbo].[usp_Brand_SeriesDetail_Smart] 
+ 	 @startno	INT = 0
+	,@endno		INT = 0
+ 	,@seriesID CHAR(14)
+    ,@SCID VARCHAR(20)
+    ,@lastNo CHAR(14) = ''
+    ,@mainCtgrID BIGINT = 0
+    ,@ChrgPrdtCd VARCHAR(100) =''
+	,@contractID VARCHAR(20)
+	,@subCtgrID BIGINT = 0
+	,@isTest	char(1) ='1'
+AS  
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+	
+	-- 사용중인 IPGKEY 가져오기
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_SmartSelect(@isTest));
+	
+	DECLARE @prdtCd VARCHAR(7) = '';
+	DECLARE @prdtName NVARCHAR(50) = ''
+	--카테고리별 월정액 정보	
+	SELECT @prdtCd = packageCode,@prdtName = name
+	FROM dbo.IPGTree A --IPG트리정보
+	INNER JOIN SMART_CMS.dbo.SodPackage B --#.월정액상품정보
+		ON A.packageCode = B.code AND gubun = 'V'
+	WHERE ipgKey = @ipgKey AND selfNodeID = @mainCtgrID
+
+	--구매 여부 확인			
+	DECLARE @buyType CHAR(1) = 'N';
+
+	select @buyType = dbo.fn_purchaseBuyYn (@subCtgrID, 'S', @seriesID, @contractID, @ChrgPrdtCd)
+	
+	--시리즈 상세 정보
+	  SELECT A.seriesID,title,rating
+		  ,CONVERT(nvarchar(30),startDate, 120) startDate
+		  ,CONVERT(nvarchar(30),endDate, 120) endDate,posterFileUrl,adminMemo
+		  ,buySeriesYN,summary,endYN,director,loadActor,notice,A.cpID,cpName,A.genreSeq,genreName
+		  ,contentType,seriseViewLength
+		  ,dbo.fn_IpgTreeContentPrice (@subCtgrID, contentType, @ChrgPrdtCd, A.seriesID,@isTest) as sericePrice
+		  ,@buyType buyYN
+		  ,@mainCtgrID mainCate
+		  ,@prdtCd prdtCd
+		  ,@prdtName prdtName
+	  FROM dbo.Series A --#.시리즈정보
+	  LEFT OUTER JOIN SMART_CMS.dbo.CPCode B --#.CP코드
+		ON A.cpID = B.cpID
+	  LEFT OUTER JOIN SMART_CMS.dbo.RecomGenreInfo C --#.추천장르정보
+		ON A.genreSeq = C.genreSeq
+	  LEFT OUTER JOIN dbo.SeriesPriceInfo D --#.시리즈가격정보
+		ON A.seriesID = D.seriesID AND D.ipgKey =@ipgKey AND D.efctStartDate <= GETDATE() AND D.efctEndDate>= GETDATE()
+	  WHERE A.ipgKey =@ipgKey AND A.useYN = 'Y' AND A.seriesID = @seriesID;
+
+	--시리즈 리스트	
+	WITH TBL
+	AS
+	(
+		SELECT COUNT(*) OVER() AS MAXCNT
+			, row_number() over(order by sort ASC) as no
+		    , A.contentID
+		    , subTitle
+		    , noOfSeries
+		    , CASE WHEN @buyType != 'N' THEN @buyType ELSE ISNULL(purType,'N') END buyYN
+		FROM dbo.SeriesContent A --#.시리즈컨텐츠정보
+	    LEFT OUTER JOIN SMART_CMS.dbo.Purchase I --#.구매내역정보
+		  ON A.contentID = I.contentID AND expireDate >= GETDATE() AND SCID = @SCID AND (isRefundment !=  'Y' OR isRefundment IS NULL)	 
+		WHERE A.ipgKey =@ipgKey AND useYN = 'Y' AND A.seriesID = @seriesID AND startDate <= GETDATE() AND endDate >= GETDATE()	 
+	)		
+	SELECT * FROM TBL WHERE NO BETWEEN @startno AND @endno;
+
+    --마지막으로 본 이후 다음 에피소드 contentID	
+	SELECT TOP 1 A.contentID
+	FROM dbo.SeriesContent A --#.시리즈컨텐츠정보
+	INNER JOIN (
+		SELECT seriesID,noOfSeries
+		FROM dbo.SeriesContent --#.시리즈컨텐츠정보
+		WHERE ipgKey =@ipgKey AND useYN = 'Y' AND seriesID = @seriesID AND contentID = @lastNo
+	)AS B
+		ON A.seriesID = B.seriesID
+	WHERE a.ipgKey =@ipgKey and a.useYN = 'Y' AND A.noOfSeries > B.noOfSeries
+	ORDER BY A.noOfSeries
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_WithList]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+/*
+	작성일 : 2013년 08월 05일  
+	작성자 : 정수미 
+	기  능 : VOD 브랜드 같이 볼만한 영상   
+	         동일카테고리내 추천 장르 컨텐츠정보 (단 본인은 제외, 시리즈는 맵핑된 컨텐츠로 리턴)
+	실  행 : EXECUTE dbo.usp_Brand_WithList 1,15,'C131004V022031',400
+	변경이력 : 
+
+*/
+CREATE PROCEDURE [dbo].[usp_Brand_WithList] 
+ 	 @startno	INT = 0
+	,@endno		INT = 0
+	,@contentID CHAR(14)
+	,@subCtgrID BIGINT
+AS  
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+	-- 사용중인 IPGKEY 가져오기	
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_Select());
+
+		
+	WITH TBL
+	AS
+	(
+		--#.[2014-01-09, 김병희, 잘못된 쿼리 수정 및 개선]
+		SELECT COUNT(*) OVER() AS MAXCNT
+		,no = (row_number() over(order by (CASE WHEN C.eventSeq IS NOT NULL THEN 'E'
+												WHEN A.isHot = 'Y' THEN 'H'
+												WHEN DATEDIFF(DAY,A.regDate,GETDATE()) <= 10 THEN 'N'
+												ELSE 'Z' --알파벳정렬을 위해 임의설정
+											END), a.sortOrder, a.regDate desc)
+				)
+		,a.contentID, a.posterFileUrl, a.mainCategory, a.mainCtgrName
+		,a.subCategory, a.subCtgrName, a.seriesID, a.title, a.rating, a.isOnlySD
+		,icon = (CASE WHEN C.eventSeq IS NOT NULL THEN 'E'
+					  WHEN A.isHot = 'Y' THEN 'H'
+					  WHEN DATEDIFF(DAY,A.regDate,GETDATE()) <= 10 THEN 'N'
+					  ELSE '0'
+				END)
+		,ISNULL(b.genreName, '') as genre, a.directors, a.runtime, a.actors, a.summary, a.regDate
+
+		FROM (
+				--컨텐츠매핑인 경우
+				SELECT A.contentID
+				,B.posterFileUrl
+				,D.parentNodeID AS mainCategory
+				,mainCtgrName = SMART_CMS.dbo.fn_TreeCategoryName(D.parentNodeID) 
+				,A.selfNodeID AS subCategory
+				,subCtgrName = SMART_CMS.dbo.fn_TreeCategoryName(D.selfNodeID) 
+				--,dbo.fn_SeriesID (@ipgKey,A.contentID) seriesID
+				-- 단편인데 다른 시리즈에 포함된 경우 시리즈 ID를 가져오는 현상 수정 2013/10/31
+				,seriesID = (CASE WHEN A.contentType = 'C' THEN '' ELSE dbo.fn_SeriesID (@ipgKey,A.contentID) END)
+				,subTitle AS title
+				,B.rating
+				,isOnlySD = (CASE WHEN B.isOnlySD = 'Y' OR B.isOnlySD = '0' THEN '0' ELSE '1' END)
+				,B.isHot
+				,B.director as directors
+				,runtime = CEILING(CONVERT(FLOAT, B.playTime)/60)
+				,B.loadActor as actors
+				,B.summary
+				,B.regDate
+				,a.sort AS sortOrder
+				,B.genreSeq --장르코드
+
+				FROM dbo.IPGTreeContent A --#.IPG트리컨텐츠정보
+				INNER JOIN dbo.IPGTree D --#.IPG트리정보
+				ON A.selfNodeID = D.selfNodeID AND A.ipgKey = D.ipgKey AND D.hiddenYN = 'Y'
+				INNER JOIN dbo.ContentVOD B --#.컨텐츠VOD정보
+				ON A.contentID = B.contentID AND A.ipgKey = B.ipgKey AND B.useYN = 'Y'	
+				--2014-02-20 최광섭 추가
+				INNER JOIN dbo.contentVODPriceInfo C --#.컨턴츠 가격정보		
+				ON A.contentID = C.contentID AND A.ipgKey = C.ipgKey 		
+				WHERE A.ipgKey = @ipgKey AND A.useYN = 'Y' AND A.selfNodeID = @subCtgrID	
+					--2014-04-29 최광섭 추가(가격정보땜시 중복으로 나오는게 제거)
+					 AND 0 < case when C.efctEndDate >= getdate()  AND C.efctStartDate < getdate() then 1 else 0 end
+
+				UNION ALL
+
+				-- 시리즈매핑인 경우
+				SELECT E.contentID
+				,B.posterFileUrl
+				,D.parentNodeID AS mainCategory
+				,mainCtgrName = SMART_CMS.dbo.fn_TreeCategoryName(D.parentNodeID) 
+				,A.selfNodeID AS subCategory
+				,subCtgrName = SMART_CMS.dbo.fn_TreeCategoryName(D.selfNodeID)
+				,E.seriesID
+				,E.subTitle AS title
+				,B.rating
+				,isOnlySD = (CASE WHEN isOnlySD = 'Y' OR isOnlySD = '0' THEN '0' ELSE '1' END)
+				,B.isHot
+				,B.director as directors
+				,runtime = CEILING(CONVERT(FLOAT, B.playTime)/60)
+				,B.loadActor as actors
+				,B.summary
+				,B.regDate
+				,a.sort + E.sort AS sortOrder
+				,B.genreSeq --장르코드
+
+				FROM dbo.IPGTreeContent A --#.IPG트리컨텐츠정보
+				INNER JOIN dbo.IPGTree D --#.IPG트리정보
+				ON A.selfNodeID = D.selfNodeID AND A.ipgKey = D.ipgKey AND D.hiddenYN = 'Y' AND A.contentType  = 'S'
+				INNER JOIN dbo.SeriesContent E --#.시리즈컨텐츠정보
+				ON A.contentID = E.seriesID AND A.ipgKey = E.ipgKey AND E.useYN = 'Y'
+				AND E.startDate <= GETDATE() AND E.endDate >= GETDATE() 
+				INNER JOIN dbo.ContentVOD B --#.컨텐츠VOD정보
+				ON E.contentID = B.contentID AND A.ipgKey = B.ipgKey AND B.useYN = 'Y'	
+				--2014-02-20 최광섭 추가
+				INNER JOIN dbo.SeriesPriceInfo C --#.컨턴츠 가격정보		
+				ON A.contentID = C.seriesID AND A.ipgKey = C.ipgKey 	
+				WHERE A.ipgKey = @ipgKey AND A.useYN = 'Y' AND A.selfNodeID = @subCtgrID	
+					--2014-04-29 최광섭 추가(가격정보땜시 중복으로 나오는게 제거)
+					 AND 0 < case when C.efctEndDate >= getdate()  AND C.efctStartDate < getdate() then 1 else 0 end
+			) a
+		INNER JOIN SMART_CMS.dbo.RecomGenreInfo b --#.추천장르정보
+		ON a.genreSeq = b.genreSeq
+		LEFT OUTER JOIN SMART_CMS.dbo.RecomEventInfo C --#.추천이벤트정보
+		ON A.contentID = C.vodCode AND C.useYN = 'Y' AND C.vodType = 'C' AND C.startDate <= GETDATE() AND C.endDate >= GETDATE()
+		WHERE a.contentID != @contentID --본인것 제외
+
+		/*
+		SELECT COUNT(*) OVER() AS MAXCNT
+			, row_number() over(order by Icon ASC, sortOrder ASC, regDate DESC) as no	
+		,contentID,posterFileUrl,mainCategory,mainCtgrName,subCategory,subCtgrName,seriesID,title,rating,isOnlySD
+		,CASE Icon WHEN 'P' THEN '0' ELSE Icon END Icon, genre, directors, runtime, actors, summary, regDate
+		FROM (
+		    --컨텐츠매핑인 경우
+			SELECT A.contentID,posterFileUrl
+					,D.parentNodeID AS mainCategory
+		            ,SMART_CMS.dbo.fn_TreeCategoryName(D.parentNodeID) mainCtgrName
+					,A.selfNodeID AS subCategory
+		            ,SMART_CMS.dbo.fn_TreeCategoryName(D.selfNodeID) subCtgrName
+					--,dbo.fn_SeriesID (@ipgKey,A.contentID) seriesID
+					-- 단편인데 다른 시리즈에 포함된 경우 시리즈 ID를 가져오는 현상 수정 2013/10/31
+					, CASE WHEN A.contentType = 'C' THEN ''
+					       ELSE dbo.fn_SeriesID (@ipgKey,A.contentID) END seriesID
+					,subTitle title
+					,B.rating,CASE WHEN isOnlySD = 'Y' OR isOnlySD = '0' THEN '0' ELSE '1' END isOnlySD
+					,CASE WHEN C.eventSeq IS NOT NULL THEN 'E'
+					WHEN isHot = 'Y' THEN 'H'
+					WHEN DATEDIFF(DAY,B.regDate,GETDATE()) <= 10 THEN 'N'
+					ELSE 'P'
+				 END Icon				 
+					-- 2013-10-13 윤찬영 -----------------------------------
+					, ISNULL(z.genreName, '') as genre
+					, B.director as directors
+					, CEILING(CONVERT(FLOAT, B.playTime)/60) as runtime
+					, B.loadActor as actors
+					, B.summary
+					--------------------------------------------------------
+					, B.regDate
+					, 0 AS sortOrder
+			FROM dbo.IPGTreeContent A --#.IPG트리컨텐츠정보
+			INNER JOIN dbo.IPGTree D --#.IPG트리정보
+				ON A.selfNodeID = D.selfNodeID AND A.ipgKey = D.ipgKey AND D.hiddenYN = 'Y'
+			INNER JOIN dbo.ContentVOD B --#.컨텐츠VOD정보
+				ON A.contentID = B.contentID AND A.ipgKey = B.ipgKey AND B.useYN = 'Y'			
+			LEFT OUTER JOIN SMART_CMS.dbo.RecomEventInfo C --#.추천이벤트정보
+			    ON A.contentID = C.vodCode AND C.useYN = 'Y' AND C.vodType = 'C' AND C.startDate <= GETDATE() AND C.endDate >= GETDATE() 
+			-- 2013-10-13 윤찬영 -----------------------------------------------
+			INNER JOIN SMART_CMS.dbo.RecomGenreInfo z --#.추천장르정보
+				ON B.genreSeq = z.genreSeq
+			WHERE A.ipgKey = @ipgKey AND A.useYN = 'Y' AND A.selfNodeID = @subCtgrID AND A.contentID != @contentID
+			-- 시리즈매핑인 경우
+			UNION
+			SELECT E.contentID,posterFileUrl
+					,D.parentNodeID AS mainCategory
+		            ,SMART_CMS.dbo.fn_TreeCategoryName(D.parentNodeID) mainCtgrName
+					,A.selfNodeID AS subCategory
+		            ,SMART_CMS.dbo.fn_TreeCategoryName(D.selfNodeID) subCtgrName
+					,E.seriesID
+					,E.subTitle title
+					,B.rating,CASE WHEN isOnlySD = 'Y' OR isOnlySD = '0' THEN '0' ELSE '1' END isOnlySD
+					,CASE WHEN C.eventSeq IS NOT NULL THEN 'E'
+					WHEN isHot = 'Y' THEN 'H'
+					WHEN DATEDIFF(DAY,B.regDate,GETDATE()) <= 10 THEN 'N'
+					ELSE 'P'
+				 END Icon				 
+					, ISNULL(z.genreName, '') as genre
+					, B.director as directors
+					, CEILING(CONVERT(FLOAT, B.playTime)/60) as runtime
+					, B.loadActor as actors
+					, B.summary
+					, B.regDate
+					, E.sort AS sortOrder
+			FROM dbo.IPGTreeContent A --#.IPG트리컨텐츠정보
+			INNER JOIN dbo.IPGTree D --#.IPG트리정보
+				ON A.selfNodeID = D.selfNodeID AND A.ipgKey = D.ipgKey AND D.hiddenYN = 'Y' AND A.contentType  = 'S'
+			INNER JOIN dbo.SeriesContent E --#.시리즈컨텐츠정보
+				ON A.contentID = E.seriesID AND A.ipgKey = E.ipgKey AND E.useYN = 'Y'
+			INNER JOIN dbo.ContentVOD B --#.컨텐츠VOD정보
+				ON E.contentID = B.contentID AND A.ipgKey = B.ipgKey AND B.useYN = 'Y'
+			LEFT OUTER JOIN SMART_CMS.dbo.RecomEventInfo C --#.추천이벤트정보
+			    ON E.contentID = C.vodCode AND C.useYN = 'Y' AND C.vodType = 'C' AND C.startDate <= GETDATE() AND C.endDate >= GETDATE() 	 
+			INNER JOIN SMART_CMS.dbo.RecomGenreInfo z --#.추천장르정보
+				ON B.genreSeq = z.genreSeq	 
+			INNER JOIN dbo.SeriesContent x ON x.ipgKey = A.ipgKey AND x.useYN = 'Y' --#.시리즈컨텐츠정보
+				AND x.contentID = @contentID AND A.contentID = x.seriesID
+			WHERE A.ipgKey = @ipgKey AND A.useYN = 'Y' AND A.selfNodeID = @subCtgrID AND E.contentID != @contentID  
+			*/
+		
+	)		
+	SELECT * FROM TBL WHERE NO BETWEEN @startno AND @endno;
+
+	
+
+
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Brand_WithList_Smart]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+/*
+	작성일 : 2014년 11월 10일  
+	작성자 : 권혁진 
+	기  능 : VOD 브랜드 같이 볼만한 영상   
+	         동일카테고리내 추천 장르 컨텐츠정보 (단 본인은 제외, 시리즈는 맵핑된 컨텐츠로 리턴)
+	         Smart 추가
+	실  행 : EXECUTE usp_Brand_WithList_Smart 1,10,'C141015V114004', 545, 'M021111,M011111,M001111'
+	변경이력 : 
+
+*/
+CREATE PROCEDURE [dbo].[usp_Brand_WithList_Smart] 
+	@startno	INT = 0
+	,@endno		INT = 0
+	,@contentID CHAR(14) = ''
+	,@subCtgrID BIGINT = 0
+	,@chrgPrdtCd VARCHAR(100) = ''
+	,@isTest	char(1) ='1'
+AS
+BEGIN
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+	-- 사용중인 IPGKEY 가져오기	
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_SmartSelect(@isTest));
+
+		
+	WITH TBL
+	AS
+	(
+		--#.[2014-01-09, 김병희, 잘못된 쿼리 수정 및 개선]
+		SELECT COUNT(*) OVER() AS MAXCNT
+		,no = (row_number() over(order by (CASE WHEN C.eventSeq IS NOT NULL THEN 'E'
+												WHEN A.isHot = 'Y' THEN 'H'
+												WHEN DATEDIFF(DAY,A.regDate,GETDATE()) <= 10 THEN 'N'
+												ELSE 'Z' --알파벳정렬을 위해 임의설정
+											END), a.sortOrder, a.regDate desc)
+				)
+		,a.contentID, a.posterFileUrl, a.mainCategory, a.mainCtgrName
+		,a.subCategory, a.subCtgrName, a.seriesID, a.title, a.rating, a.isOnlySD
+		,icon = (CASE WHEN C.eventSeq IS NOT NULL THEN 'E'
+					  WHEN A.isHot = 'Y' THEN 'H'
+					  WHEN DATEDIFF(DAY,A.regDate,GETDATE()) <= 10 THEN 'N'
+					  ELSE '0'
+				END)
+		,ISNULL(b.genreName, '') as genre, a.directors, a.runtime, a.actors, a.summary, a.regDate
+		, a.contentPrice
+		, a.contentType
+		FROM (
+				--컨텐츠매핑인 경우
+				SELECT A.contentID
+				,B.posterFileUrl
+				,D.parentNodeID AS mainCategory
+				,mainCtgrName = SMART_CMS.dbo.fn_TreeCategoryName(D.parentNodeID) 
+				,A.selfNodeID AS subCategory
+				,subCtgrName = SMART_CMS.dbo.fn_TreeCategoryName(D.selfNodeID) 
+				--,dbo.fn_SeriesID (@ipgKey,A.contentID) seriesID
+				-- 단편인데 다른 시리즈에 포함된 경우 시리즈 ID를 가져오는 현상 수정 2013/10/31
+				,seriesID = (CASE WHEN A.contentType = 'C' THEN '' ELSE dbo.fn_SeriesID (@ipgKey,A.contentID) END)
+				,subTitle AS title
+				,B.rating
+				,isOnlySD = (CASE WHEN B.isOnlySD = 'Y' OR B.isOnlySD = '0' THEN '0' ELSE '1' END)
+				,B.isHot
+				,B.director as directors
+				,runtime = CEILING(CONVERT(FLOAT, B.playTime)/60)
+				,B.loadActor as actors
+				,B.summary
+				,B.regDate
+				,a.sort AS sortOrder
+				,B.genreSeq --장르코드
+				,A.contentType
+				,dbo.fn_IpgTreeContentPrice(A.selfNodeID, A.contentType, @chrgPrdtCd , A.contentID,@isTest) AS contentPrice
+				FROM dbo.IPGTreeContentSmart A --#.IPG트리컨텐츠정보
+				INNER JOIN dbo.IPGTreeSmart D --#.IPG트리정보
+				ON A.selfNodeID = D.selfNodeID AND A.ipgKey = D.ipgKey AND D.hiddenYN = 'Y'
+				INNER JOIN dbo.ContentVOD B --#.컨텐츠VOD정보
+				ON A.contentID = B.contentID AND A.ipgKey = B.ipgKey AND B.useYN = 'Y'	
+				--2014-02-20 최광섭 추가
+				INNER JOIN dbo.contentVODPriceInfo C --#.컨턴츠 가격정보		
+				ON A.contentID = C.contentID AND A.ipgKey = C.ipgKey 		
+				WHERE A.ipgKey = @ipgKey AND A.useYN = 'Y' AND A.selfNodeID = @subCtgrID	
+					--2014-04-29 최광섭 추가(가격정보땜시 중복으로 나오는게 제거)
+					 AND 0 < case when C.efctEndDate >= getdate()  AND C.efctStartDate < getdate() then 1 else 0 end
+
+				UNION ALL
+
+				-- 시리즈매핑인 경우
+				SELECT A.contentID
+					, SE.posterFileUrl
+					, D.parentNodeID AS mainCategory
+					, mainCtgrName = SMART_CMS.dbo.fn_TreeCategoryName(D.parentNodeID)
+					, A.selfNodeID AS subCategory
+					, subCtgrName = SMART_CMS.dbo.fn_TreeCategoryName(D.selfNodeID)
+					, SE.seriesID
+					, SE.title
+					, SE.rating
+					, isOnlySD = ''--(CASE WHEN isOnlySD = 'Y' OR isOnlySD = '0' THEN '0' ELSE '1' END)
+					, isHot = ''
+					, SE.director
+					, runtime = ''
+					, actors = ''
+					, SE.summary
+					, SE.regDate
+					, A.sort AS sortOrder
+					, SE.genreSeq
+					, SE.contentType
+					, dbo.fn_IpgTreeContentPrice(A.selfNodeID, A.contentType, @chrgPrdtCd , A.contentID,@isTest) AS contentPrice
+				FROM dbo.IPGTreeContentSmart A
+					INNER JOIN dbo.IPGTreeSmart D --#.IPG트리정보
+						ON A.selfNodeID = D.selfNodeID AND A.ipgKey = D.ipgKey AND D.hiddenYN = 'Y' AND A.contentType  = 'S'
+					INNER JOIN dbo.series SE
+						ON A.contentID = SE.SeriesID AND A.ipgKey = SE.ipgKey AND SE.useYN = 'Y'
+				WHERE A.ipgKey = @ipgKey AND A.useYN = 'Y' AND A.selfNodeID = @subCtgrID	
+			) a
+		INNER JOIN SMART_CMS.dbo.RecomGenreInfo b --#.추천장르정보
+		ON a.genreSeq = b.genreSeq
+		LEFT OUTER JOIN SMART_CMS.dbo.RecomEventInfo C --#.추천이벤트정보
+		ON A.contentID = C.vodCode AND C.useYN = 'Y' AND C.vodType = 'C' AND C.startDate <= GETDATE() AND C.endDate >= GETDATE()
+		WHERE a.contentID != @contentID --본인것 제외
+
+		
+	)
+	SELECT * FROM TBL WHERE NO BETWEEN @startno AND @endno;
+
+END
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_DeleteApiTop15]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+/*
+
+	작성일 : 2013년 08월 06일  
+
+	작성자 : 최광섭 
+
+	기 능  : API상위 15개만 남기고 지우기  
+
+	실  행 : EXEC dbo.[usp_DeleteApiTop15]
+
+	변경이력 : 
+
+*/
+
+CREATE PROCEDURE [dbo].[usp_DeleteApiTop15] 
+AS  
+
+	SET NOCOUNT ON;	
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+declare @tmp table
+( ipgKey int);
+insert into @tmp
+select ipgKey from dbo.[IPGInfo] where ipgKey not in (
+select top 15 ipgKey from dbo.[IPGInfo] group by ipgKey order by ipgKey desc)
+and serviceYn = 'N'
+group by ipgKey 
+
+--select * from @tmp;
+
+delete [dbo].[contentVODPriceInfo] where ipgKey in (select ipgKey from @tmp); 
+
+delete [dbo].[ContentVOD] where ipgKey in (select ipgKey from @tmp); 
+
+delete [dbo].[SeriesContent] where ipgKey in (select ipgKey from @tmp); 
+
+delete [dbo].[SeriesPriceInfo] where ipgKey in (select ipgKey from @tmp); 
+
+delete [dbo].[IPGTreeContent] where ipgKey in (select ipgKey from @tmp); 
+
+delete [dbo].[Series] where ipgKey in (select ipgKey from @tmp); 
+
+delete [dbo].[IPGTree] where ipgKey in (select ipgKey from @tmp); 
+
+delete [dbo].[IPGInfo] where ipgKey in (select ipgKey from @tmp); 
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Device_UseInfo]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+/*
+	작성일 : 2013년 09월 03일  
+	작성자 : 정수미 
+	기  능 : 단말 버젼 조회  
+	실  행 : EXECUTE dbo.usp_Device_UseInfo ''
+	변경이력 :
+*/
+CREATE PROCEDURE [dbo].[usp_Device_UseInfo] 
+	@version NVARCHAR(10)
+AS  
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+	
+	SELECT [dbo].fn_IPGKey_Select();
+	 
+	SELECT TOP 1 systemCheck,message1 AS checkMsg1,message2 AS checkMsg2
+	FROM dbo.DeviceCheckBoard
+	WHERE systemCheck = 'Y'
+	ORDER BY idx
+
+	SELECT message1 AS updateMsg1,message2 AS updateMsg2,version,appid,terminate AS forcedUpdateYN
+	FROM dbo.DeviceLoading
+	WHERE version = @version
+	
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_DeviceCheckBoard_Save]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-- 작성일 : 2013.07.25
+-- 작성자 : 최광섭
+-- 기  능 : 단말시스템관리 수정
+-- 실  행 : exec usp_DeviceLoading_Save @idx=0,@version=N'1.0',@appid=N'ap11111111',@gubun=N'ALL',@message1=N'all message 1',@terminate=N'Y'
+-- 변경이력 : 
+CREATE PROCEDURE [dbo].[usp_DeviceCheckBoard_Save]
+	@idx numeric(38,0) = 0,
+	@gubun nvarchar(10) = null,
+	@message1 nvarchar(200) = null,
+	@message2 nvarchar(200) = null,
+	@systemCheck char(1) = null
+AS
+	SET NOCOUNT ON;
+
+	if(@idx = 0)
+	begin
+		select @idx = isnull(max([idx]), 0) + 1 from [DeviceCheckBoard];
+
+		INSERT INTO [dbo].[DeviceCheckBoard]
+			   ([idx]
+			   ,[systemCheck]
+			   ,[gubun]
+			   ,[message1]
+			   ,[message2]
+			   ,[regdate])
+		 VALUES
+			   (@idx
+			   ,@systemCheck
+			   ,@gubun
+			   ,@message1
+			   ,@message2
+			   ,getdate())
+	end
+	else
+	begin
+		UPDATE [dbo].[DeviceCheckBoard]
+		   SET [systemCheck] = @systemCheck
+			  ,[message1] = @message1
+			  ,[message2] = @message2
+			  ,[regdate] = getdate()
+		 WHERE [idx] = @idx and [gubun] = @gubun;
+	end
+	
+	
+
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_DeviceLoading_Save]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-- 작성일 : 2013.07.25
+-- 작성자 : 최광섭
+-- 기  능 : 단말버전관리 수정
+-- 실  행 : exec usp_DeviceLoading_Save @idx=0,@version=N'1.0',@appid=N'ap11111111',@gubun=N'ALL',@message1=N'all message 1',@terminate=N'Y'
+-- 변경이력 : 
+CREATE PROCEDURE [dbo].[usp_DeviceLoading_Save]
+	@idx numeric(38,0) = 0,
+	@version nvarchar(10) = null,
+	@appid nvarchar(100) = null,
+	@gubun nvarchar(10) = null,
+	@message1 nvarchar(200) = null,
+	@terminate char(1) = null
+AS
+	SET NOCOUNT ON;
+
+	if(@idx = 0)
+	begin
+		select @idx = isnull(max([idx]), 0) + 1 from [DeviceLoading];
+
+		INSERT INTO [dbo].[DeviceLoading]
+           ([idx]
+           ,[version]
+           ,[appid]
+           ,[gubun]
+           ,[regdate]
+           ,[message1]
+           ,[terminate])
+		 VALUES
+			   (@idx
+			   ,@version
+			   ,@appid
+			   ,@gubun
+			   ,getdate()
+			   ,@message1
+			   ,@terminate);
+	end
+	else
+	begin
+		UPDATE [dbo].[DeviceLoading]
+		   SET [version] = @version
+			  ,[appid] = @appid
+			  ,[message1] = @message1
+			  ,[terminate] = @terminate
+			  ,[regdate] = getdate()
+		 WHERE [idx] = @idx and [gubun] = @gubun;
+	end
+	
+	
+
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_IPG_UseInfo]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+/*
+	작성일 : 2013년 08월 05일  
+	작성자 : 정수미 
+	기  능 : IPG 사용정보   
+	실  행 : EXECUTE dbo.usp_IPG_UseInfo 
+	변경이력 :
+*/
+CREATE PROCEDURE [dbo].[usp_IPG_UseInfo] 
+AS  
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+	
+	DECLARE @ipgKey INT = [dbo].fn_IPGKey_Select();
+	 
+	SELECT selfNodeID ctgrID,nodeName ctgrName
+    FROM dbo.IPGTree A
+    INNER JOIN SMART_CMS.[dbo].[SuppleSvcCode] B
+		ON A.SuppleSvcCode = B.SuppleSvcCode AND suppleKind = 'S'
+    WHERE hiddenYN = 'Y' AND ipgKey = @ipgKey AND nodeLevel = 1 AND ISNULL(ParentNodeID,0) = 0
+	      AND A.startDate <= GETDATE() AND A.endDate >= GETDATE()
+    ORDER BY sort ASC
+
+
+
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_IPGContentInfo_List]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+-- 작성일 : 2013년 07월 23일  
+-- 작성자 : 정수미 
+-- 기  능 : IPG 매핑 리스트     
+-- 실  행 : EXECUTE dbo.usp_IPGContentInfo_List 2, 10087, 'STB_001'
+-- 변경이력 :
+CREATE PROCEDURE [dbo].[usp_IPGContentInfo_List] 
+	@selfNodeID BIGINT = null
+   ,@ipgKey INT
+   ,@SuppleSvcCode varchar(10)
+AS  
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+	
+	if(@selfNodeID is null)
+	begin
+		select *
+		  ,CASE WHEN EXISTS (SELECT SelfNodeID FROM IPGTREE WHERE ParentNodeID = A.SelfNodeID) THEN 'Y' ELSE 'N' END CHILD
+		from IPGTree A with(nolock)
+		where ipgKey = @ipgKey and SuppleSvcCode = @SuppleSvcCode;
+	end
+	else
+	begin	
+		SELECT SMART_CMS.dbo.fn_SodCodeName (A.contentType,31) contentName
+		  ,A.contentID,coalesce(B.title,C.title) title
+		  ,A.sort,subTitle
+		  ,SMART_CMS.dbo.fn_SodCodeName (A.useYN,12) useName 
+	  FROM dbo.IPGTreeContent A with(nolock)
+	  LEFT OUTER JOIN dbo.ContentVOD B with(nolock)
+		ON A.contentID= B.contentID AND A.ipgKey = B.ipgKey AND contentType = 'C'
+	  LEFT OUTER JOIN dbo.Series C with(nolock)
+		ON A.contentID = C.seriesID AND A.ipgKey = C.ipgKey
+	  WHERE A.selfNodeID = @selfNodeID AND A.ipgKey = @ipgKey
+	  ORDER BY sort ASC
+	end
+GO
+/****** Object:  StoredProcedure [dbo].[usp_IPGCreateSequence]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+
+/*
+	 작성일 : 2013년 08월 12일  
+	 작성자 : 박원희 
+	 기 능  : IPG 생성
+	    
+	 실  행 : 
+	     DECLARE @ipgKey int
+		 EXECUTE  dbo.usp_IPGCreateSequence @ipgKey output
+		 select @ipgKey
+		 
+	 변경이력 : 
+		
+*/
+
+CREATE PROCEDURE [dbo].[usp_IPGCreateSequence] 
+	 @ipgKey int output		
+AS  
+
+SET NOCOUNT ON
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+
+
+	
+	Insert Into dbo.IPGInfo (testYn, serviceYn, delYn, regdate, updateDate)
+	VAlues ('Y', 'N', 'N', getdate(), getdate())
+
+	Set @ipgKey = @@IDENTITY
+
+
+	-- VOD
+	Insert Into dbo.ContentVOD 
+	(
+           ipgKey, contentID,title,isDrm,isHot, isOnlySD,priority,useYN
+           ,cpID,isAdultCategory,playTime,rating,genreSeq,maxViewingLength
+           ,keyword,writer,summary,director,loadActor,produce,produceYear
+           ,country,posterFilePath,posterFileUrl,metaFileName,previewContentID
+           ,regDate,updateDate
+	)
+	Select
+           @ipgKey, contentID,title,isDrm,isHot, isOnlySD,priority,useYN
+           ,cpID,isAdultCategory,playTime,rating,genreSeq,maxViewingLength
+           ,keyword,writer,summary,director,loadActor,produce,produceYear
+           ,country,posterFilePath,posterFileUrl,metaFileName,previewContentID
+           ,regDate,updateDate
+	  From SMART_CMS.dbo.ContentVOD
+	 Where useYN = 'Y'
+
+
+
+	INSERT INTO dbo.contentVODPriceInfo
+	(
+		ipgKey, productID,contentPriceSeq,contentID,efctTitle,isHD,efctStartDate,efctEndDate,price,regDate,updateDate
+	)
+	Select
+		   @ipgKey, productID, contentPriceSeq,contentID,efctTitle,isHD,efctStartDate,efctEndDate,price,regDate,updateDate
+	  From SMART_CMS.dbo.contentVODPriceInfo a
+	 Where Exists(Select 1 From SMART_CMS.dbo.ContentVOD Where contentID =a.contentID And useYN = 'Y')
+
+
+
+	 --Series
+	 INSERT INTO dbo.Series
+	 (
+		ipgKey,seriesID,title,rating,startDate,endDate
+		,useYN,posterFilePath,posterFileUrl,adminMemo,buySeriesYN
+		,summary,endYN,director,loadActor,notice,cpID
+		,genreSeq,contentType,seriseViewLength,priceChangeDate
+		,regDate,updateDate
+	 )
+	 Select
+			@ipgKey,seriesID,title,rating,startDate,endDate
+			,useYN,posterFilePath,posterFileUrl,adminMemo,buySeriesYN
+			,summary,endYN,director,loadActor,notice,cpID
+			,genreSeq,contentType,seriseViewLength,priceChangeDate
+			,regDate,updateDate
+	   From SMART_CMS.dbo.Series
+	  Where useYn = 'Y'
+
+
+
+	 INSERT INTO dbo.SeriesContent
+	 (
+		ipgKey,seriesID,contentID,subTitle,noOfSeries
+		,startDate,endDate,sort,useYN,regDate
+	 )
+	 Select
+			@ipgKey,seriesID,contentID,subTitle,noOfSeries
+			,startDate,endDate,sort,useYN,regDate
+	   From SMART_CMS.dbo.SeriesContent a
+	  Where useYn = 'Y'
+	  and seriesID in (select seriesID From SMART_CMS.dbo.Series Where useYn = 'Y' group by seriesID)
+
+
+	  
+	  
+	 INSERT INTO dbo.SeriesPriceInfo
+	 (
+		ipgKey,productID,seriesPriceSeq,seriesID,efctTitle
+		,isHD,efctStartDate,efctEndDate,price
+		,regDate,updateDate
+	 )
+	 Select
+			@ipgKey,productID,seriesPriceSeq,seriesID,efctTitle
+			,isHD,efctStartDate,efctEndDate,price
+			,regDate,updateDate
+	   From SMART_CMS.dbo.SeriesPriceInfo a
+	  Where Exists(Select 1 From SMART_CMS.dbo.Series Where seriesID =a.seriesID And useYN = 'Y')
+
+
+
+
+	 -- Category
+	 INSERT INTO dbo.IPGTree
+	 (
+		ipgKey,selfNodeID,SuppleSvcCode,parentNodeID,nodeName
+		,sort,rating,status,serialPlay,HDType,productDesc
+		,packageType,packageCode,startDate,endDate,nodeLevel
+		,hiddenYN,relationTypeCode,promotionYN
+		,regDate,updateDate
+	 )
+	 Select
+			@ipgKey,selfNodeID,SuppleSvcCode,parentNodeID,nodeName
+			,sort,rating,status,serialPlay,HDType,productDesc
+			,packageType,packageCode,startDate,endDate,nodeLevel
+			,hiddenYN,relationTypeCode,promotionYN
+			,regDate,updateDate
+	   From SMART_CMS.dbo.IPGTree a
+
+
+
+	 INSERT INTO dbo.IPGTreeContent
+	 (
+	 	ipgKey,selfNodeID,contentID,contentType,sort
+		,subTitle,useYN,regDate
+     )
+	 Select
+			@ipgKey,selfNodeID,contentID,contentType,sort
+			,subTitle,useYN,regDate
+	   From SMART_CMS.dbo.IPGTreeContent a
+
+
+
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_IPGInfo_Delete]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+/*
+	작성일 : 2013년 08월 13일  
+	작성자 : 정수미 
+	기  능 : IPG 운영버전 삭제
+	실  행 : 
+		DECLARE @ERROR_CHK INT
+		EXECUTE dbo.usp_IPGInfo_Delete '',@ERROR_CHK OUTPUT
+		SELECT @ERROR_CHK
+	변경이력 :
+*/
+CREATE PROCEDURE [dbo].[usp_IPGInfo_Delete] 
+     @ipgKey VARCHAR(500)
+   , @ERROR_CHK INT OUTPUT 
+AS  
+	BEGIN 
+	
+		SET NOCOUNT ON;
+
+	 IF EXISTS (
+	   SELECT *
+	   FROM dbo.IPGInfo A
+	   INNER JOIN (
+		 SELECT VALUE				   
+		 FROM dbo.fn_Split_Tbl (@ipgKey,'|')
+	   ) AS B
+		ON A.ipgKey = B.VALUE
+	   WHERE A.ipgKey = B.VALUE AND serviceYn = 'Y'
+	 )
+		BEGIN
+		
+			SET @ERROR_CHK = 1;
+			
+		END
+		ELSE
+			BEGIN		
+			
+					UPDATE dbo.IPGInfo
+					SET delYn = 'Y',updateDate = GETDATE()
+					FROM (
+					SELECT VALUE				   
+						FROM dbo.fn_Split_Tbl (@ipgKey,'|')
+					) AA
+					WHERE dbo.IPGInfo.ipgKey = AA.VALUE
+				
+					SET @ERROR_CHK = 0;	 
+			
+			END
+				
+	END
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_IPGInfo_List]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+/*
+	작성일 : 2013년 08월 13일  
+	작성자 : 정수미 
+	기  능 : IPG 운용버전 리스트    
+	실  행 : EXECUTE dbo.usp_IPGInfo_List '','','2013-07-12','2013-08-12'
+	변경이력 :
+*/
+CREATE PROCEDURE [dbo].[usp_IPGInfo_List] 
+	 @testYn CHAR(1) = ''
+	,@serviceYn CHAR(1) = ''
+	,@sDate VARCHAR(10) = ''
+	,@eDate VARCHAR(10) = ''
+AS  
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+	
+		SELECT top 15 A.ipgKey,testYn,serviceYn
+		  ,ISNULL(MenuCount,0) MenuCount
+		  ,ISNULL(SeriesCount,0) SeriesCount
+		  ,ISNULL(ContentCount,0) ContentCount
+		  ,CASE WHEN testYn = 'Y' THEN '테스트' 
+		        WHEN testYn = 'N' THEN '운용' 
+		        ELSE '' END [version]
+		  ,CASE WHEN serviceYn = 'Y' THEN '운용' 
+				WHEN serviceYn = 'N' THEN '중지' 
+		        ELSE '' END serviceName
+		  ,serviceYn,testYn
+		  ,CASE WHEN serviceYn = 'Y' THEN '' 
+		        WHEN serviceYn = 'N' THEN '서비스' 
+		        ELSE '' END serviceChange
+		  ,CASE WHEN serviceYn = 'Y' THEN ''
+		        WHEN testYn = 'Y' THEN '운용' 
+		        WHEN testYn = 'N' THEN '테스트' 
+		        ELSE '' END testChange
+		  ,[regdate]
+		  ,[updateDate]
+		FROM dbo.IPGInfo A
+		LEFT OUTER JOIN (
+			SELECT ipgKey,COUNT(*) MenuCount
+			  FROM dbo.[IPGTree]
+			  GROUP BY ipgKey
+		) B
+			ON A.ipgKey = B.ipgKey
+		LEFT OUTER JOIN (
+			SELECT ipgKey,COUNT(*) SeriesCount
+			  FROM dbo.Series
+			  GROUP BY ipgKey
+		) C
+			ON A.ipgKey = C.ipgKey
+		LEFT OUTER JOIN (
+			SELECT ipgKey,COUNT(*) ContentCount
+			  FROM dbo.ContentVOD
+			  GROUP BY ipgKey
+		) D
+			ON A.ipgKey = D.ipgKey
+		WHERE delYn = 'N'
+		      AND testYn = CASE WHEN @testYn = '' THEN testYn ELSE @testYn END	 
+			  AND serviceYn = CASE WHEN @serviceYn = '' THEN serviceYn ELSE @serviceYn END	 
+		      AND regDate BETWEEN @sDate AND DATEADD(DAY,1,@eDate)
+		order by ipgKey desc
+		  
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_IPGInfo_ServiceChange]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+/*
+	작성일 : 2013년 08월 13일  
+	작성자 : 정수미 
+	기  능 : IPG 운영버전 서비스변경
+	실  행 : 
+		DECLARE @Result INT
+		EXECUTE dbo.usp_IPGInfo_ServiceChange 1,@Result OUTPUT
+		SELECT @Result
+	변경이력 :
+*/
+CREATE PROCEDURE [dbo].[usp_IPGInfo_ServiceChange] 
+     @ipgKey BIGINT
+   , @Result INT OUTPUT 
+AS  
+	BEGIN 
+	
+		SET NOCOUNT ON;
+		
+	 IF EXISTS (
+	   SELECT *
+	   FROM dbo.IPGInfo
+	   WHERE ipgKey = @ipgKey AND testYn = 'N'
+	 )
+		BEGIN
+			UPDATE dbo.IPGInfo
+			SET serviceYn = 'N'
+			WHERE testYn = 'N' and ipgKey != @ipgKey;
+		
+		
+			UPDATE dbo.IPGInfo
+			SET serviceYn = 'Y'
+			WHERE testYn = 'N' and ipgKey = @ipgKey;
+		
+			SET @Result = 0;	 
+		END
+	ELSE IF EXISTS (
+	   SELECT *
+	   FROM dbo.IPGInfo
+	   WHERE ipgKey = @ipgKey AND testYn = 'Y'
+	 )
+		BEGIN
+			UPDATE dbo.IPGInfo
+			SET serviceYn = 'N'
+			WHERE testYn = 'Y' and ipgKey != @ipgKey;
+		
+		
+			UPDATE dbo.IPGInfo
+			SET serviceYn = 'Y'
+			WHERE testYn = 'Y' and ipgKey = @ipgKey;
+		
+			SET @Result = 0;	
+		END
+	ELSE
+		BEGIN
+			SET @Result = 2;			-- 정보 없음
+		END
+				
+	END
+
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_IPGInfo_TestChange]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+/*
+	작성일 : 2013년 08월 13일  
+	작성자 : 정수미 
+	기  능 : IPG 운영버전 테스트변경
+	실  행 : 
+		DECLARE @ERROR_CHK INT
+		EXECUTE dbo.usp_IPGInfo_TestChange 1,'N',@ERROR_CHK OUTPUT
+		SELECT @ERROR_CHK
+	변경이력 :
+*/
+CREATE PROCEDURE [dbo].[usp_IPGInfo_TestChange] 
+     @ipgKey BIGINT
+   , @testYn CHAR(1)
+   , @ERROR_CHK INT OUTPUT 
+AS  
+	BEGIN 
+	
+			UPDATE dbo.IPGInfo
+			SET testYn = @testYn
+			WHERE ipgKey = @ipgKey
+		
+			SET @ERROR_CHK = @@ERROR;	 
+
+				
+	END
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_PackageBrand_RecentList_v1_Smart]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+/*
+	작성일 : 2014년 12월 05일  
+	작성자 : 최광섭
+	기  능 : 패키지 카테고리 편성정보   
+	실  행 : EXECUTE dbo.[usp_PackageBrand_RecentList_v1_Smart] 519, 1, 10, 'M021111,M011111,M001111'
+	변경이력 : dbo.usp_Brand_RecentList 참고
+
+
+	select * from dbo.ipginfo where serviceYn = 'Y' AND delYn = 'N';
+*/
+CREATE PROCEDURE [dbo].[usp_PackageBrand_RecentList_v1_Smart] 
+	@mainCtgrID BIGINT,
+	@iStarNo    INT = 0,
+    @iEndNo     INT = 0,
+    @ChrgPrdtCd VARCHAR(100) ='',
+    @cuaRating  INT = 1
+AS
+    SET nocount ON;
+    SET TRANSACTION isolation level READ uncommitted;
+
+    -- 사용중인 IPGKEY 가져오기
+    DECLARE @ipgKey INT = (SELECT dbo.Fn_ipgkey_select());
+
+    --카테고리별 월정액 정보		
+    SELECT CASE
+             WHEN ( B.code IS NULL ) THEN ''
+             ELSE Isnull(packageCode, '')
+           END              packageCode,
+           Isnull(NAME, '') NAME,
+           rating
+    FROM   dbo.ipgtreesmart A --#.IPG트리정보
+           LEFT OUTER JOIN SMART_CMS.dbo.sodpackage B --#.패키지정보
+                        ON A.packageCode = B.code
+    WHERE  ipgKey = @ipgKey
+           AND selfNodeID = @mainCtgrID
+
+    -- 현 카테고리의 하위 카테고리 총갯수 출력
+    DECLARE @tmp TABLE
+      (
+         selfnodeID BIGINT
+      );
+
+    INSERT INTO @tmp
+    SELECT a.selfnodeID
+    FROM   dbo.ipgtreesmart a --#.IPG트리정보
+           INNER JOIN ipgpackagemapping b
+                   ON a.selfnodeID = b.selfNodeID
+                      AND a.ipgKey = b.ipgKey
+    WHERE  a.ipgKey = @ipgKey
+           AND hiddenYN = 'Y'
+           AND parentNodeID = @mainCtgrID
+           AND startDate <= Getdate()
+           AND endDate >= Getdate();
+
+    SELECT Count(*) AS [Count]
+    FROM   @tmp;
+
+--메인카테고리의 하위에 있는 카테고리 목록 가져오기
+;
+    WITH tbl
+         AS (SELECT Row_number()
+                      OVER(
+                        ORDER BY sort ASC)
+                    AS
+                    NO,
+                    a.selfNodeID
+                    AS
+                    ctgrID,
+                    nodeName
+                    AS
+                    ctgrName
+                       ,
+                    rating
+                       AS subCtgrRating,
+                    c.packageID,
+                    CAST([dbo].[fn_Split](dbo.Fn_ipgtreecontentprice (a.selfNodeID, 'C', @ChrgPrdtCd,
+                    Isnull(e.contentID, '')),',',0) as int) 
+                       packagePrice,
+                    --dbo.Fn_purchasebuyyn (a.selfNodeID, '', '', '', @ChrgPrdtCd)
+                    --AS
+                    --   prdtBuyYn,
+                    CASE
+                      WHEN Isnull(ipgImgUrl, '') <> '' THEN ipgImgUrl
+                      WHEN rating <= @cuaRating THEN posterFileUrl
+                      WHEN 1 = @cuaRating THEN posterFileUrl
+                      ELSE '제작'
+                    END
+                       ipgImgUrl
+             FROM   dbo.ipgtreesmart a --#.IPG트리정보
+                    INNER JOIN ipgpackagemapping c
+                            ON a.selfnodeid = c.selfnodeid
+                               AND a.ipgKey = c.ipgKey
+                    LEFT JOIN SMART_CMS.dbo.package d
+                           ON c.packageId = d.packageID
+                    LEFT JOIN (SELECT Row_number()
+                                        OVER(
+                                          partition BY selfNodeID
+                                          ORDER BY a.regDate DESC) no,
+                                      a.contentID,
+                                      selfNodeID,
+                                      posterFileUrl
+                               FROM   ipgtreecontentsmart a
+                                      INNER JOIN contentvod b
+                                              ON a.contentID = b.contentID
+                                                 AND a.ipgKey = b.ipgKey
+                               WHERE  a.ipgKey = @ipgKey
+                                      AND a.selfNodeID IN (SELECT selfNodeID
+                                                           FROM   @tmp)) e
+                           ON a.selfNodeID = e.selfNodeID
+             WHERE  a.ipgKey = @ipgKey
+                    AND hiddenYN = 'Y'
+                    AND parentNodeID = @mainCtgrID
+                    AND startDate <= Getdate()
+                    AND endDate >= Getdate()
+                    AND e.no = 1)
+    SELECT ctgrID, ctgrName, subCtgrRating, packageID, ipgImgUrl, packagePrice
+    FROM   tbl
+    WHERE  NO BETWEEN @iStarNo AND @iEndNo; 
+
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Series_NextNo]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+/*
+
+ 작성일 : 2013년 07월 31일  
+ 작성자 : 정수미 
+ 기  능 : Series 다음회차 정보     
+ 실  행 : 
+	 EXECUTE dbo.usp_Series_NextNo '1','15',0,'',''
+ 
+  변경이력 :
+  
+ */
+ 
+CREATE PROCEDURE [dbo].[usp_Series_NextNo] 
+ 	 @seriesID CHAR(14)
+   , @contentID CHAR(14)
+   , @noOfSeries INT
+   , @packCooki VARCHAR(1000)
+	,@SCID VARCHAR(20)
+	,@mainCategoryID BIGINT = 0
+	,@contractID VARCHAR(20) = ''
+AS  
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+	DECLARE @CTABLE TABLE
+	(
+		code VARCHAR(20)
+	)
+
+	INSERT INTO @CTABLE (code)
+	SELECT VALUE	   
+	FROM dbo.fn_Split_Tbl (@packCooki,',')
+
+	-- 사용중인 IPGKEY 가져오기
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_Select());
+	
+	DECLARE @nextContentID CHAR(14);
+	DECLARE @episodeNo INT;
+	DECLARE @title VARCHAR(50)
+	DECLARE @buyType CHAR(1) = 'N';
+	DECLARE @contentPrice INT;
+	 
+	--다음 회차 정보 가져오기   
+	SELECT TOP 1 @nextContentID = A.contentID,@episodeNo = noOfSeries
+			,@title = subTitle,@contentPrice = ISNULL(price,0)
+    FROM dbo.SeriesContent A --#.시리즈컨텐츠정보
+    LEFT OUTER JOIN dbo.contentVODPriceInfo K --#.컨텐츠VOD가격정보
+		ON A.contentID = K.contentID AND K.ipgKey = @ipgKey AND K.efctStartDate <= GETDATE() AND K.efctEndDate>= GETDATE()
+    WHERE A.ipgKey = @ipgKey AND A.useYN = 'Y' AND startDate <= GETDATE() AND endDate >= GETDATE()
+		AND seriesID = @seriesID AND noOfSeries > @noOfSeries    
+    ORDER BY noOfSeries ASC
+
+
+	--jumpingPoint 정보 찾기
+	DECLARE @jumpingPoint INT = 0;
+	IF(@nextContentID IS NOT NULL)
+		BEGIN
+			SELECT TOP 1 @jumpingPoint = ISNULL(jumpingPoint,0)
+			FROM CUA.SMART_CUA.dbo.PlayList --#.시청리스트
+			WHERE contractID = @contractID 
+				AND contentID = @nextContentID
+				AND endDate IS NOT NULL
+			ORDER BY endDate DESC
+		END
+	
+	--월정액 가입 여부 확인	
+	IF EXISTS ( 
+		SELECT *
+		FROM @CTABLE A
+		INNER JOIN SMART_CMS.dbo.SodPackage C --#.월정액상품정보
+			ON A.code = C.code AND gubun = 'V'
+		INNER JOIN dbo.IPGTree B --#.IPG트리정보
+			ON B.packageCode = C.code
+		WHERE B.ipgKey = @ipgKey AND selfNodeID = @mainCategoryID
+	) BEGIN
+	
+		SET @buyType = 'P';
+		
+	  END
+	--시리즈 컨텐츠 구매 여부
+	ELSE
+		BEGIN
+		
+			SELECT TOP 1 @buyType = ISNULL(purType,'N')
+			FROM SMART_CMS.dbo.Purchase I --#.구매내역정보
+			LEFT OUTER JOIN @CTABLE B
+				ON I.packID = B.code
+			WHERE ( 
+					  contentID = @nextContentID 
+					  OR seriesID = @seriesID 
+				  )
+				  AND expireDate >= GETDATE()  AND (isRefundment !=  'Y' OR isRefundment IS NULL)
+				  AND legacyId = [dbo].[fn_Split](@contractID,'_', 0) + [dbo].[fn_Split](@contractID,'_', 1)
+			ORDER BY purType DESC
+			
+		END
+	
+	--내려주는 반환 값		
+	SELECT @buyType buyYN,ISNULL(@nextContentID,'') nextContentID
+	      ,@episodeNo episodeNo,@title title,@contentPrice contentPrice
+	      ,ISNULL(@jumpingPoint,0) jumpingPoint
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_TerminalSystem_Insert]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+-- 작성일 : 2013년 07월 05일
+-- 제  목 : 시스템점검관리 수정
+-- 실  행 : exec usp_terminalsystem_save '1|iphone|Y|테스트1-1|테스트1-2|;';
+-- 비  고 : 수정, 배열순: idx|gubun|system_check|message1|message2|;
+ 
+/*
+	select * from dbo.DeviceCheckBoard
+*/
+CREATE PROCEDURE [dbo].[usp_TerminalSystem_Insert]	
+	(@dataset nvarchar(4000))
+as
+begin
+	
+	declare @istart int, @xend int, @yend int, @icnt int
+	set @istart = 1;
+	declare @xframe varchar(1000), @xbox varchar(1000)
+	declare @idx int, @system_check nchar(2), @gubun nvarchar(10), @message1 nvarchar(400), @message2 nvarchar(400)
+
+	while(LEN(@dataset)>0)
+		begin
+			set @xend = CHARINDEX(';', @dataset, @istart); --구분자위치
+			if @xend = 0 break;
+			
+			select @xframe = rtrim(ltrim(SUBSTRING(@dataset, @istart, @xend-1))); --데이터추출
+			--print @xframe
+			
+			set @xbox = @xframe; set @icnt = 0;
+			while(LEN(@xbox)>0)
+				begin
+					set @icnt = @icnt+1;
+					set @yend = CHARINDEX('|', @xbox, @istart); --구분자위치
+					if @yend = 0 break;
+					
+					--데이터설정
+					if @icnt = 1 set @idx = convert(int, SUBSTRING(@xbox, @istart, @yend-1))
+					else if @icnt = 2 set @gubun = SUBSTRING(@xbox, @istart, @yend-1)
+					else if @icnt = 3 set @system_check = SUBSTRING(@xbox, @istart, @yend-1)
+					else if @icnt = 4 set @message1 = SUBSTRING(@xbox, @istart, @yend-1)
+					else if @icnt = 5 set @message2 = SUBSTRING(@xbox, @istart, @yend-1)
+					
+					set @xbox = SUBSTRING(@xbox, @yend+1, LEN(@xbox));	--처리데이터제거		
+					
+				end
+				
+				--데이터처리..
+				if(select 1 from dbo.DeviceCheckBoard where IDX = @idx and GUBUN = @gubun) > 0
+					begin
+						update dbo.DeviceCheckBoard
+						set SYSTEMCHECK = @system_check, MESSAGE1 = @message1, MESSAGE2 = @message2, REGDATE = GETDATE()
+						where IDX = @idx and GUBUN = @gubun						
+					end
+				else
+					begin
+						set @idx = (select isnull(MAX(idx),0) +1 from dbo.DeviceCheckBoard)
+					
+						insert into dbo.DeviceCheckBoard(IDX, SYSTEMCHECK, GUBUN, MESSAGE1, MESSAGE2, REGDATE)
+						values(@idx,@system_check,@gubun,@message1,@message2,GETDATE())
+					end
+								
+				
+				set @dataset = SUBSTRING(@dataset, @xend+1, LEN(@dataset)); --처리데이터제거
+		end
+	
+end
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_TerminalVersion_Update]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+-- 작성일 : 2012년 07월 05일
+-- 제  목 : 단말버전관리 수정  
+-- 실  행 : exec usp_TerminalVersion_Update @dataset=N'1|pc|pc|pc|pc|Y|;'
+-- 비  고 : 수정, 배열순:idx|version|appid|message1|;
+ 
+/*
+	select * from dbo.TB_LOADING
+*/
+CREATE PROCEDURE [dbo].[usp_TerminalVersion_Update]	
+	(@dataset nvarchar(4000))
+as
+begin
+	
+	declare @istart int, @xend int, @yend int, @icnt int
+	set @istart = 1;
+	declare @xframe varchar(1000), @xbox varchar(1000)
+	declare @idx int, @version nvarchar(20), @appid nvarchar(200), @message1 nvarchar(400), @terminate char(1)
+
+	while(LEN(@dataset)>0)
+		begin
+			set @xend = CHARINDEX(';', @dataset, @istart); --구분자위치
+			if @xend = 0 break;
+			
+			select @xframe = rtrim(ltrim(SUBSTRING(@dataset, @istart, @xend-1))); --데이터추출
+			print @xframe
+			
+			set @xbox = @xframe; set @icnt = 0;
+			while(LEN(@xbox)>0)
+				begin
+					set @icnt = @icnt+1;
+					set @yend = CHARINDEX('|', @xbox, @istart); --구분자위치
+					if @yend = 0 break;
+					
+					--데이터설정
+					if @icnt = 1 set @idx = convert(int, SUBSTRING(@xbox, @istart, @yend-1))
+					else if @icnt = 2 set @version = SUBSTRING(@xbox, @istart, @yend-1)
+					else if @icnt = 3 set @appid = SUBSTRING(@xbox, @istart, @yend-1)
+					else if @icnt = 4 set @message1 = SUBSTRING(@xbox, @istart, @yend-1)
+					else if @icnt = 5 set @terminate = SUBSTRING(@xbox, @istart, @yend-1)
+					
+					set @xbox = SUBSTRING(@xbox, @yend+1, LEN(@xbox));	--처리데이터제거		
+					
+				end
+				
+				--데이터처리..
+				update dbo.DeviceLoading
+				set [VERSION] = @version, APPID = @appid, MESSAGE1 = @message1, REGDATE = GETDATE(), terminate = @terminate
+				where IDX = @idx
+				
+				
+				set @dataset = SUBSTRING(@dataset, @xend+1, LEN(@dataset)); --처리데이터제거
+		end
+	
+end
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_vodInfo_Select]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+
+
+
+/*
+
+	작성일 : 2014년 3월 25일  
+
+	작성자 :
+
+	기  능 : VOD INFO 2 Watcha
+
+	실  행 :
+	 EXECUTE dbo.[usp_vodInfo_Select] 1, 10, '2014-01-30 15:00:00'
+
+	변경이력 : 
+	
+
+*/
+
+CREATE PROCEDURE [dbo].[usp_vodInfo_Select] 
+
+	@page	int,
+
+	@count int,
+
+	@reqDate datetime 
+
+AS  
+
+	SET NOCOUNT ON;
+
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+
+	-- 사용중인 IPGKEY 가져오기
+
+	DECLARE @ipgKey INT = (select dbo.fn_IPGKey_Select());
+	
+	DECLARE @startNO int, @endNO int
+
+	SET @startNO = (@page - 1) * @count
+	SET @endNO = @startNO + @count
+
+	-- request page, count
+
+	DECLARE @totalCount int = (
+			SELECT COUNT(1)
+			FROM dbo.IPGTreeContent A --#.IPG트리컨텐츠정보
+
+					INNER JOIN dbo.IPGTree B --#.IPG트리정보
+
+					ON a.ipgKey = b.ipgKey and A.selfNodeID = B.selfNodeID 
+
+					INNER JOIN dbo.ContentVOD C --#.컨텐츠VOD정보
+
+					ON a.ipgKey = c.ipgKey and A.contentID = C.contentID AND C.useYN = 'Y'    
+
+					--LEFT OUTER JOIN SMART_CMS.dbo.RecomEventInfo E --#.추천이벤트정보 
+
+					--ON A.contentID = E.vodCode AND E.useYN = 'Y' AND E.vodType = 'C' AND E.startDate <= GETDATE() AND E.endDate >= GETDATE() 
+
+					--LEFT OUTER JOIN SMART_CMS.dbo.RecomGenreInfo z --#.추천장르정보
+
+					--ON C.genreSeq = z.genreSeq
+
+					----------------------------------------------------------------------------------
+	
+					LEFT OUTER JOIN contentVODPriceInfo F --# VOD가격정보
+
+						ON A.contentID = F.contentID AND F.ipgKey = @ipgKey and A.contentType  = 'C' 
+
+					LEFT OUTER JOIN SeriesPriceInfo G --# 시리즈가격정보
+
+						ON A.contentID = G.seriesID AND G.ipgKey = @ipgKey and A.contentType  = 'S' 
+
+					WHERE 
+						A.ipgKey = @ipgKey 
+						AND contentType = 'C'
+						AND c.updateDate > @reqDate
+						AND dbo.fn_ContentSeriesPriceYN_Select (a.contentType,a.contentID) = 'Y'		
+						AND 0 < case when F.contentID is not null AND F.efctEndDate >= getdate() AND F.efctStartDate < getdate() then 1
+		  							   when G.seriesID is not null AND G.efctEndDate >= getdate()  AND G.efctStartDate < getdate()  then 1
+									   when F.contentID is null and G.seriesID is null then 0
+									   else 0 end
+	)
+	 
+
+	SELECT @totalCount [totalCount], @page [page], @count [count]
+
+	
+	SELECT 
+		 contentID
+		,mainCtgrID
+		,mainCtgrName
+		,subCtgrID
+		,subCtgrName
+		,title
+	    ,isHD
+		,isDRM	   
+		,viewduration
+		,screenType
+		,Icon
+		,directors
+		,actors
+		,runtime
+		,rating
+		,summary
+	FROM (
+			SELECT TOP 300				
+				row_number() over(order by C.updateDate DESC) as no
+				,A.contentID
+				,parentNodeID as mainCtgrID
+				,dbo.fn_TreeName(@ipgKey, parentNodeID) as mainCtgrName
+				,A.selfNodeID as subCtgrID
+				,B.nodeName as subCtgrName
+				 ,A.subTitle as title	  
+				,isHD = (CASE WHEN isOnlySD = 'Y' THEN 'N' ELSE 'Y' END)
+				,C.isDrm as isDRM	   
+				,C.maxViewingLength as viewduration
+				, 'S' as screenType
+				,Icon = (CASE WHEN E.eventSeq IS NOT NULL THEN 'E'
+							  WHEN isHot = 'Y' THEN 'H'
+							  WHEN DATEDIFF(DAY,C.regDate,GETDATE()) <= 10 THEN 'N'
+							  ELSE '0'
+						 END)
+				 ,ISNULL(C.director, '') as directors
+				 ,ISNULL(C.loadActor, '') as actors
+				 ,CEILING(CONVERT(FLOAT,C.playTime)/60) as runtime
+				 ,C.rating
+				 ,ISNULL(C.summary, '') as summary
+
+				 ----------------------------------------------------------------
+
+			FROM dbo.IPGTreeContent A --#.IPG트리컨텐츠정보
+
+			INNER JOIN dbo.IPGTree B --#.IPG트리정보
+
+			ON a.ipgKey = b.ipgKey and A.selfNodeID = B.selfNodeID 
+
+			INNER JOIN dbo.ContentVOD C --#.컨텐츠VOD정보
+
+			ON a.ipgKey = c.ipgKey and A.contentID = C.contentID AND C.useYN = 'Y'    
+
+			LEFT OUTER JOIN SMART_CMS.dbo.RecomEventInfo E --#.추천이벤트정보 
+
+			ON A.contentID = E.vodCode AND E.useYN = 'Y' AND E.vodType = 'C' AND E.startDate <= GETDATE() AND E.endDate >= GETDATE() 
+		
+
+			--LEFT OUTER JOIN SMART_CMS.dbo.RecomGenreInfo z --#.추천장르정보
+
+			--ON C.genreSeq = z.genreSeq
+
+			----------------------------------------------------------------------------------
+	
+			LEFT OUTER JOIN contentVODPriceInfo F --# VOD가격정보
+
+				ON A.contentID = F.contentID AND F.ipgKey = @ipgKey and A.contentType  = 'C' 
+
+			LEFT OUTER JOIN SeriesPriceInfo G --# 시리즈가격정보
+
+				ON A.contentID = G.seriesID AND G.ipgKey = @ipgKey and A.contentType  = 'S' 
+
+			WHERE 
+				A.ipgKey = @ipgKey 
+				AND contentType = 'C'
+				AND c.updateDate > @reqDate
+				AND dbo.fn_ContentSeriesPriceYN_Select (a.contentType,a.contentID) = 'Y'		
+				AND 0 < case when F.contentID is not null AND F.efctEndDate >= getdate() AND F.efctStartDate < getdate() then 1
+		  					   when G.seriesID is not null AND G.efctEndDate >= getdate()  AND G.efctStartDate < getdate()  then 1
+							   when F.contentID is null and G.seriesID is null then 0
+							   else 0 end
+
+			ORDER BY c.updateDate DESC
+	) A
+
+	WHERE A.no BETWEEN @startNO AND @endNO
+		
+
+	SELECT
+			c.contentID [contentIDp], price, efctStartDate, efctEndDate
+	FROM
+			dbo.IPGTreeContent A --#.IPG트리컨텐츠정보
+
+			INNER JOIN dbo.IPGTree B --#.IPG트리정보
+
+			ON a.ipgKey = b.ipgKey and A.selfNodeID = B.selfNodeID 
+
+			INNER JOIN dbo.ContentVOD C --#.컨텐츠VOD정보
+
+			ON a.ipgKey = c.ipgKey and A.contentID = C.contentID AND C.useYN = 'Y'    			
+	
+			LEFT OUTER JOIN contentVODPriceInfo F --# VOD가격정보
+
+				ON A.contentID = F.contentID AND F.ipgKey = @ipgKey and A.contentType  = 'C'		
+
+			WHERE 
+				A.ipgKey = @ipgKey 
+				AND contentType = 'C'
+				AND c.updateDate > @reqDate
+				AND dbo.fn_ContentSeriesPriceYN_Select (a.contentType,a.contentID) = 'Y'						  
+			order by C.updateDate desc			
+	 
+
+	
+
+
+
+
+
+GO
+/****** Object:  StoredProcedure [dbo].[usp_WinJob_EPGAll_Load]    Script Date: 2015-10-15 오후 4:37:45 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-- 작성일 : 2014.11.19
+-- 작성자 : 권혁진
+-- 제  목 : [Windows 서비스]EPG 추출
+-- 실  행 : EXEC [dbo].[usp_WinJob_EPGAll_Load]
+
+CREATE PROCEDURE [dbo].[usp_WinJob_EPGAll_Load]
+
+AS
+BEGIN
+	SET NOCOUNT ON;
+	set transaction isolation level read uncommitted
+	
+	SELECT *
+	FROM [SMART_CMS].[dbo].[ChannelEPG] WITH ( NOLOCK)
+	WHERE periodStart > CONVERT (VARCHAR (10), GETDATE(), 21)
+		  and action = 'insert'
+	ORDER BY periodStart
+
+
+END
+
+GO
